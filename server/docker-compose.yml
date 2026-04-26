@@ -1,0 +1,34 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg15
+    environment:
+      POSTGRES_USER: iotel
+      POSTGRES_PASSWORD: iotel
+      POSTGRES_DB: iotel
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    ports:
+      - "8554:8554"
+      - "1935:1935"
+      - "8888:8888"
+      - "8889:8889"
+
+  simulator:
+    image: sauron-simulator:latest
+    build:
+      context: ./mock
+    depends_on:
+      - mediamtx
+    environment:
+      - SERVER_URL=http://host.docker.internal:8000
+      - RTSP_HOST=rtsp://mediamtx:8554
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:

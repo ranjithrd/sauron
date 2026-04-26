@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+opencv-python
+numpy
+asyncpg
+pydantic
+pydantic-settings
+requests
+pytest
+pytest-asyncio

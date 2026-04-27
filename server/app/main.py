@@ -8,9 +8,9 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.db.connection import init_db
 from app.db.writer import write_track
+from app.ingestion.mqtt_client import MQTTClient
 from app.kalman.tracker import KalmanTracker
 from app.triangulation.pipeline import TriangulationPipeline
-from app.video.stream_manager import StreamManager
 
 
 @asynccontextmanager
@@ -18,18 +18,18 @@ async def lifespan(app: FastAPI):
     # ── DB ────────────────────────────────────────────────────────────
     await init_db()
 
-    # ── Pipeline: StreamManager → TriangulationPipeline → KalmanTracker → DB
+    # ── Pipeline: MQTTClient → TriangulationPipeline → KalmanTracker → DB
     kalman_tracker = KalmanTracker(on_update=write_track)
     pipeline = TriangulationPipeline(kalman_tracker=kalman_tracker)
-    stream_manager = StreamManager()
-    stream_manager.on_detection(pipeline.handle_detection)
+    mqtt_client = MQTTClient()
+    mqtt_client.on_detection(pipeline.handle_detection)
 
     await pipeline.start()
     
     # ── Background Tasks ──────────────────────────────────────────────
-    asyncio.create_task(stream_manager.run(), name="stream-manager-loop")
+    asyncio.create_task(mqtt_client.run(), name="mqtt-client-loop")
 
-    app.state.stream_manager = stream_manager
+    app.state.mqtt_client = mqtt_client
     app.state.pipeline = pipeline
     app.state.kalman_tracker = kalman_tracker
 
@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
 
     # ── Graceful shutdown ─────────────────────────────────────────────
     await pipeline.stop()
-    await stream_manager.stop()
+    await mqtt_client.stop()
 
 
 app = FastAPI(title="IOT EL Server", lifespan=lifespan)
@@ -50,10 +50,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.api.ingestion import router as ingestion_router  # noqa: E402
 from app.api.dashboard import router as dashboard_router  # noqa: E402
 
-app.include_router(ingestion_router)
 app.include_router(dashboard_router)
 
 # Serve the static dashboard

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.config import settings
 from app.triangulation.triangulator import (
@@ -19,7 +19,9 @@ from app.triangulation.triangulator import (
     flat_earth_distance_m,
     intersect_rays,
 )
-from app.video.stream_manager import Detection
+
+if TYPE_CHECKING:
+    from app.ingestion.mqtt_client import Detection
 
 logger = logging.getLogger(__name__)
 
@@ -122,17 +124,24 @@ class Correlator:
         ray1 = build_ray(
             camera_lat=d1.camera_lat,
             camera_lon=d1.camera_lon,
-            camera_bearing=d1.camera_bearing,
+            camera_heading=d1.camera_heading,
+            camera_pitch=d1.camera_pitch,
+            camera_roll=d1.camera_roll,
             camera_fov=d1.camera_fov,
-            x_norm=d1.x_norm,
+            xnorm=d1.xnorm,
         )
         ray2 = build_ray(
             camera_lat=d2.camera_lat,
             camera_lon=d2.camera_lon,
-            camera_bearing=d2.camera_bearing,
+            camera_heading=d2.camera_heading,
+            camera_pitch=d2.camera_pitch,
+            camera_roll=d2.camera_roll,
             camera_fov=d2.camera_fov,
-            x_norm=d2.x_norm,
+            xnorm=d2.xnorm,
         )
+
+        if ray1 is None or ray2 is None:
+            return
 
         position = intersect_rays(ray1, ray2)
 

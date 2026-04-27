@@ -34,15 +34,27 @@ ON object_tracks (object_id, time DESC);
 
 _CREATE_CAMERAS = """
 CREATE TABLE IF NOT EXISTS cameras (
-    device_id   TEXT PRIMARY KEY,
-    rtsp_url    TEXT,
-    lat         DOUBLE PRECISION,
-    lon         DOUBLE PRECISION,
-    bearing_deg DOUBLE PRECISION,
-    fov_deg     DOUBLE PRECISION,
-    last_seen   TIMESTAMPTZ DEFAULT NOW()
+    device_id    TEXT PRIMARY KEY,
+    lat          DOUBLE PRECISION,
+    lon          DOUBLE PRECISION,
+    last_heading DOUBLE PRECISION,
+    last_pitch   DOUBLE PRECISION,
+    last_roll    DOUBLE PRECISION,
+    last_seen    TIMESTAMPTZ DEFAULT NOW()
 );
 """
+
+_CAMERA_SCHEMA_MIGRATIONS = [
+    "ALTER TABLE cameras ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION",
+    "ALTER TABLE cameras ADD COLUMN IF NOT EXISTS lon DOUBLE PRECISION",
+    "ALTER TABLE cameras ADD COLUMN IF NOT EXISTS last_heading DOUBLE PRECISION",
+    "ALTER TABLE cameras ADD COLUMN IF NOT EXISTS last_pitch DOUBLE PRECISION",
+    "ALTER TABLE cameras ADD COLUMN IF NOT EXISTS last_roll DOUBLE PRECISION",
+    "ALTER TABLE cameras ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ DEFAULT NOW()",
+    "ALTER TABLE cameras DROP COLUMN IF EXISTS rtsp_url",
+    "ALTER TABLE cameras DROP COLUMN IF EXISTS bearing_deg",
+    "ALTER TABLE cameras DROP COLUMN IF EXISTS fov_deg",
+]
 
 
 async def init_db() -> None:
@@ -56,6 +68,8 @@ async def init_db() -> None:
         await conn.execute(_CREATE_OBJECT_TRACKS)
         await conn.execute(_CREATE_OBJECT_TRACKS_IDX)
         await conn.execute(_CREATE_CAMERAS)
+        for statement in _CAMERA_SCHEMA_MIGRATIONS:
+            await conn.execute(statement)
         logger.info("DB: tables ensured")
 
         # Create hypertable — ignore if already a hypertable

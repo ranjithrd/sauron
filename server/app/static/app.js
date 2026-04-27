@@ -61,11 +61,12 @@ async function loadCameras() {
     try {
         const res = await fetch('/api/cameras');
         const data = await res.json();
+        const validCameras = data.filter(c => Number.isFinite(c.lat) && Number.isFinite(c.lon));
         
-        if (data.length > 0) {
+        if (validCameras.length > 0) {
             // Fit map to show all cameras with some padding
-            const lats = data.map(c => c.lat);
-            const lons = data.map(c => c.lon);
+            const lats = validCameras.map(c => c.lat);
+            const lons = validCameras.map(c => c.lon);
             const bounds = L.latLngBounds(
                 [Math.min(...lats) - 0.002, Math.min(...lons) - 0.002],
                 [Math.max(...lats) + 0.002, Math.max(...lons) + 0.002]
@@ -73,15 +74,24 @@ async function loadCameras() {
             map.fitBounds(bounds);
         }
 
-        data.forEach(cam => {
+        validCameras.forEach(cam => {
             cameras[cam.device_id] = cam;
+            const heading = Number.isFinite(cam.last_heading)
+                ? cam.last_heading
+                : (Number.isFinite(cam.bearing_deg) ? cam.bearing_deg : 0);
+            const pitch = Number.isFinite(cam.last_pitch) ? cam.last_pitch : 0;
+            const roll = Number.isFinite(cam.last_roll) ? cam.last_roll : 0;
+            const fov = Number.isFinite(cam.fov_deg) ? cam.fov_deg : 60;
             
             // Marker
             L.marker([cam.lat, cam.lon]).addTo(map)
-                .bindPopup(`<b>${cam.device_id}</b><br>RTSP: ${cam.rtsp_url}`);
+                .bindPopup(
+                    `<b>${cam.device_id}</b><br>Heading: ${heading.toFixed(1)}&deg;<br>` +
+                    `Pitch: ${pitch.toFixed(1)}&deg;<br>Roll: ${roll.toFixed(1)}&deg;`
+                );
             
             // FOV Cone
-            drawFOVCone(cam.lat, cam.lon, cam.bearing_deg, cam.fov_deg, 250);
+            drawFOVCone(cam.lat, cam.lon, heading, fov, 250);
         });
     } catch (e) {
         console.error("Failed to load cameras:", e);

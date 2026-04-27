@@ -1,10 +1,10 @@
 fastapi
 uvicorn[standard]
-opencv-python
 numpy
 asyncpg
 pydantic
 pydantic-settings
-requests
+aiomqtt>=2.0.0
+awsiotsdk
 pytest
 pytest-asyncio

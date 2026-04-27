@@ -1,8 +1,9 @@
 """
 triangulator.py — pure math, no I/O, no state.
 
-Flat-earth approximation throughout (valid for areas < ~5 km).
-All angles are compass bearings: 0=North, 90=East, 180=South, 270=West.
+Build a 3D line-of-sight ray from camera heading/pitch/roll, project it onto
+the ground plane, then triangulate as the midpoint between two cameras' ground
+projections.
 """
 
 from __future__ import annotations
@@ -11,173 +12,137 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+from app.config import settings
 
-_METERS_PER_DEG_LAT: float = 111_320.0   # ~constant globally
-_PARALLEL_THRESHOLD: float = 1e-10        # denominator below this → parallel rays
+_METERS_PER_DEG_LAT: float = 111_320.0
+_UPWARD_EPS: float = 1e-9
+_HORIZON_FALLBACK_DZ: float = -1e-3
+_CONFIDENCE_DISTANCE_SCALE_M: float = 25.0
 
-
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class CameraRay:
     lat: float
     lon: float
-    bearing_deg: float   # absolute compass bearing of this ray
+    bearing_deg: float
+    ground_offset_m: tuple[float, float]   # (east_m, north_m)
 
 
 @dataclass(frozen=True)
 class TriangulatedPosition:
     lat: float
     lon: float
-    confidence: float    # [0, 1] — sine of angle between rays
+    confidence: float    # [0, 1] — higher when two projected points agree
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def compute_object_bearing(
-    camera_bearing_deg: float,
+    camera_heading_deg: float,
     fov_deg: float,
-    x_norm: float,
+    xnorm: float,
 ) -> float:
-    """
-    Return the absolute compass bearing from a camera to a detected object.
-
-    Parameters
-    ----------
-    camera_bearing_deg : float
-        The direction the camera centre points (0=North, 90=East …).
-    fov_deg : float
-        Horizontal field of view of the camera in degrees.
-    x_norm : float
-        Normalised horizontal position of the object in the frame [0, 1].
-        0 = left edge, 0.5 = centre, 1 = right edge.
-
-    Returns
-    -------
-    float
-        Absolute compass bearing in [0, 360).
-    """
-    offset = (x_norm - 0.5) * fov_deg
-    return (camera_bearing_deg + offset) % 360.0
+    """Return absolute compass bearing from camera heading + horizontal offset."""
+    x_offset_deg = (xnorm - 0.5) * fov_deg
+    return (camera_heading_deg + x_offset_deg) % 360.0
 
 
 def build_ray(
     camera_lat: float,
     camera_lon: float,
-    camera_bearing: float,
+    camera_heading: float,
+    camera_pitch: float,
+    camera_roll: float,
     camera_fov: float,
-    x_norm: float,
-) -> CameraRay:
-    """
-    Construct a :class:`CameraRay` from camera metadata and a detection position.
-    """
-    bearing = compute_object_bearing(camera_bearing, camera_fov, x_norm)
-    return CameraRay(lat=camera_lat, lon=camera_lon, bearing_deg=bearing)
+    xnorm: float,
+) -> Optional[CameraRay]:
+    """Construct a pitch/roll-corrected camera ray projected to the ground plane."""
+    bearing = compute_object_bearing(camera_heading, camera_fov, xnorm)
+    bearing_rad = math.radians(bearing)
+
+    # ENU direction from bearing (flat horizon reference).
+    dx = math.sin(bearing_rad)  # East
+    dy = math.cos(bearing_rad)  # North
+
+    # Apply pitch around East-West axis.
+    pitch_rad = math.radians(camera_pitch)
+    dy_pitched = dy * math.cos(pitch_rad)
+    dz_pitched = dy * math.sin(pitch_rad)
+
+    # Apply roll around North-South axis.
+    roll_rad = math.radians(camera_roll)
+    dx_rolled = dx * math.cos(roll_rad) - dz_pitched * math.sin(roll_rad)
+    dz_final = dx * math.sin(roll_rad) + dz_pitched * math.cos(roll_rad)
+    dy_final = dy_pitched
+
+    # Keep zero-pitch rays triangulatable by nudging exact-horizon rays slightly down.
+    if abs(dz_final) <= _UPWARD_EPS:
+        dz_final = _HORIZON_FALLBACK_DZ
+
+    # Upward rays do not hit the ground in front of camera.
+    if dz_final > 0.0:
+        return None
+
+    t = -settings.CAMERA_HEIGHT_M / dz_final
+    if t <= 0.0:
+        return None
+
+    east_m = t * dx_rolled
+    north_m = t * dy_final
+
+    return CameraRay(
+        lat=camera_lat,
+        lon=camera_lon,
+        bearing_deg=bearing,
+        ground_offset_m=(east_m, north_m),
+    )
 
 
 def intersect_rays(
     ray1: CameraRay,
     ray2: CameraRay,
 ) -> Optional[TriangulatedPosition]:
-    """
-    Find the real-world intersection of two camera rays using the flat-earth
-    approximation.
+    """Triangulate by midpoint between the two projected ground points."""
+    p1_lat, p1_lon = _ground_point_lat_lon(ray1)
+    p2_lat, p2_lon = _ground_point_lat_lon(ray2)
 
-    Returns ``None`` if:
-    - The rays are parallel (denominator < ``_PARALLEL_THRESHOLD``).
-    - The intersection lies *behind* either camera (``t < 0`` or ``s < 0``).
-
-    Parameters
-    ----------
-    ray1, ray2 : CameraRay
-        The two rays to intersect.
-
-    Returns
-    -------
-    TriangulatedPosition | None
-    """
-    # ------------------------------------------------------------------
-    # 1. Convert lat/lon → flat-earth metres
-    #    Use the average latitude for longitude scaling.
-    # ------------------------------------------------------------------
-    ref_lat_rad = math.radians((ray1.lat + ray2.lat) / 2.0)
+    ref_lat_rad = math.radians((p1_lat + p2_lat) / 2.0)
     meters_per_deg_lon = _METERS_PER_DEG_LAT * math.cos(ref_lat_rad)
+    if abs(meters_per_deg_lon) < 1e-12:
+        return None
 
-    x1 = ray1.lon * meters_per_deg_lon
-    y1 = ray1.lat * _METERS_PER_DEG_LAT
-    x2 = ray2.lon * meters_per_deg_lon
-    y2 = ray2.lat * _METERS_PER_DEG_LAT
+    x1 = p1_lon * meters_per_deg_lon
+    y1 = p1_lat * _METERS_PER_DEG_LAT
+    x2 = p2_lon * meters_per_deg_lon
+    y2 = p2_lat * _METERS_PER_DEG_LAT
 
-    # ------------------------------------------------------------------
-    # 2. Direction unit vectors (compass bearing → Cartesian)
-    #    dx = sin(bearing), dy = cos(bearing)
-    # ------------------------------------------------------------------
-    b1_rad = math.radians(ray1.bearing_deg)
-    b2_rad = math.radians(ray2.bearing_deg)
+    midpoint_x = (x1 + x2) / 2.0
+    midpoint_y = (y1 + y2) / 2.0
 
-    dx1 = math.sin(b1_rad)
-    dy1 = math.cos(b1_rad)
-    dx2 = math.sin(b2_rad)
-    dy2 = math.cos(b2_rad)
+    separation_m = math.hypot(x2 - x1, y2 - y1)
+    confidence = 1.0 / (1.0 + (separation_m / _CONFIDENCE_DISTANCE_SCALE_M))
+    confidence = max(0.0, min(1.0, confidence))
 
-    # ------------------------------------------------------------------
-    # 3. Solve:  [x1,y1] + t*[dx1,dy1] = [x2,y2] + s*[dx2,dy2]
-    #
-    #    Rearranged:
-    #        t*dx1 - s*dx2 = x2 - x1   … (A)
-    #        t*dy1 - s*dy2 = y2 - y1   … (B)
-    #
-    #    Matrix form:  [[dx1, -dx2], [dy1, -dy2]] * [t, s]^T = [Δx, Δy]
-    #    det = dx1*(−dy2) − (−dx2)*dy1 = dx2*dy1 − dx1*dy2
-    # ------------------------------------------------------------------
-    denom = dx2 * dy1 - dx1 * dy2   # same magnitude as cross-product
-
-    # ------------------------------------------------------------------
-    # 4. Confidence — sine of angle between rays = |cross product|
-    # ------------------------------------------------------------------
-    confidence = abs(denom)   # unit vectors, so this is already in [0, 1]
-
-    if abs(denom) < _PARALLEL_THRESHOLD:
-        return None   # rays are parallel
-
-    dx = x2 - x1
-    dy = y2 - y1
-
-    # Cramer's rule
-    t = (-dx * dy2 + dx2 * dy) / denom
-    s = (-dx * dy1 + dx1 * dy) / denom
-
-    if t < 0.0 or s < 0.0:
-        return None   # intersection is behind at least one camera
-
-    # ------------------------------------------------------------------
-    # 5. Intersection point → back to lat/lon
-    # ------------------------------------------------------------------
-    ix = x1 + t * dx1
-    iy = y1 + t * dy1
-
-    result_lat = iy / _METERS_PER_DEG_LAT
-    result_lon = ix / meters_per_deg_lon
-
-    return TriangulatedPosition(lat=result_lat, lon=result_lon, confidence=confidence)
+    return TriangulatedPosition(
+        lat=midpoint_y / _METERS_PER_DEG_LAT,
+        lon=midpoint_x / meters_per_deg_lon,
+        confidence=confidence,
+    )
 
 
-# ---------------------------------------------------------------------------
-# Internal helper (also used by correlator for distance checks)
-# ---------------------------------------------------------------------------
+def _ground_point_lat_lon(ray: CameraRay) -> tuple[float, float]:
+    east_m, north_m = ray.ground_offset_m
+
+    lat = ray.lat + (north_m / _METERS_PER_DEG_LAT)
+
+    meters_per_deg_lon = _METERS_PER_DEG_LAT * math.cos(math.radians(ray.lat))
+    if abs(meters_per_deg_lon) < 1e-12:
+        return lat, ray.lon
+
+    lon = ray.lon + (east_m / meters_per_deg_lon)
+    return lat, lon
+
 
 def flat_earth_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Return the approximate distance in metres between two lat/lon points
-    using the flat-earth approximation.
-    """
+    """Return approximate distance in metres between two lat/lon points."""
     ref_lat_rad = math.radians((lat1 + lat2) / 2.0)
     meters_per_deg_lon = _METERS_PER_DEG_LAT * math.cos(ref_lat_rad)
     dlat = (lat2 - lat1) * _METERS_PER_DEG_LAT

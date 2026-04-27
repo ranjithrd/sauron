@@ -112,22 +112,26 @@ class TestWriteTrack:
 class TestUpsertCamera:
     async def test_upsert_camera_new_device(self, db):
         """upsert_camera() for a new device must create a row."""
-        await upsert_camera("cam_01", "rtsp://host/cam_01", 1.0, 2.0, 90.0, 60.0)
+        await upsert_camera("cam_01", 1.0, 2.0, 90.0, -5.0, 1.2)
         row = await db.fetchrow("SELECT * FROM cameras WHERE device_id = 'cam_01'")
         assert row is not None
-        assert row["rtsp_url"] == "rtsp://host/cam_01"
+        assert float(row["last_heading"]) == pytest.approx(90.0)
+        assert float(row["last_pitch"]) == pytest.approx(-5.0)
+        assert float(row["last_roll"]) == pytest.approx(1.2)
 
     async def test_upsert_camera_updates_existing(self, db):
         """upsert_camera() for the same device must update, not duplicate."""
-        await upsert_camera("cam_02", "rtsp://host/cam_02", 1.0, 2.0, 90.0, 60.0)
-        await upsert_camera("cam_02", "rtsp://host/cam_02_new", 3.0, 4.0, 180.0, 90.0)
+        await upsert_camera("cam_02", 1.0, 2.0, 90.0, -2.0, 0.5)
+        await upsert_camera("cam_02", 3.0, 4.0, 180.0, -1.0, -0.3)
 
         count = await db.fetchval("SELECT COUNT(*) FROM cameras WHERE device_id = 'cam_02'")
         assert count == 1
 
         row = await db.fetchrow("SELECT * FROM cameras WHERE device_id = 'cam_02'")
-        assert row["rtsp_url"] == "rtsp://host/cam_02_new"
         assert float(row["lat"]) == pytest.approx(3.0)
+        assert float(row["last_heading"]) == pytest.approx(180.0)
+        assert float(row["last_pitch"]) == pytest.approx(-1.0)
+        assert float(row["last_roll"]) == pytest.approx(-0.3)
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +236,8 @@ class TestGetPlayback:
 class TestCameraQueries:
     async def test_get_all_cameras(self, db):
         """get_all_cameras() must return all registered cameras."""
-        await upsert_camera("cam_x", "rtsp://x", 0.0, 0.0, 0.0, 60.0)
-        await upsert_camera("cam_y", "rtsp://y", 1.0, 1.0, 90.0, 60.0)
+        await upsert_camera("cam_x", 0.0, 0.0, 0.0, -3.0, 0.1)
+        await upsert_camera("cam_y", 1.0, 1.0, 90.0, -4.0, -0.2)
 
         cams = await get_all_cameras()
         ids = {c["device_id"] for c in cams}
@@ -241,7 +245,7 @@ class TestCameraQueries:
 
     async def test_get_camera_known(self, db):
         """get_camera() must return the correct row for a known device_id."""
-        await upsert_camera("cam_z", "rtsp://z", 5.0, 6.0, 45.0, 90.0)
+        await upsert_camera("cam_z", 5.0, 6.0, 45.0, -6.0, 0.0)
         cam = await get_camera("cam_z")
         assert cam is not None
         assert cam["device_id"] == "cam_z"

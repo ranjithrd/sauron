@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.triangulation.correlator import CorrelatedDetection, Correlator
-from app.video.stream_manager import Detection
+
+if TYPE_CHECKING:
+    from app.ingestion.mqtt_client import Detection
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +25,7 @@ _PRUNE_INTERVAL_S: float = 1.0
 
 class TriangulationPipeline:
     """
-    Connects the video stream detections → correlator → Kalman tracker.
+    Connects telemetry detections → correlator → Kalman tracker.
 
     Parameters
     ----------
@@ -74,7 +76,7 @@ class TriangulationPipeline:
 
     async def handle_detection(self, detection: Detection) -> None:
         """
-        Entry point — called by the StreamManager for every Detection event.
+        Entry point — called by the MQTT client for every Detection event.
         Hands off to the Correlator which buffers and triangulates.
         """
         await self._correlator.add(detection)

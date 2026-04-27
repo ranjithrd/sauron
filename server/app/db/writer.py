@@ -37,28 +37,33 @@ async def write_track(position: SmoothedPosition) -> None:
 
 async def upsert_camera(
     device_id: str,
-    rtsp_url: str,
     lat: float,
     lon: float,
-    bearing_deg: float,
-    fov_deg: float,
+    heading: float,
+    pitch: float,
+    roll: float,
 ) -> None:
-    """Insert or update a camera registration row."""
+    """Insert or update latest camera telemetry metadata."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO cameras
-                (device_id, rtsp_url, lat, lon, bearing_deg, fov_deg, last_seen)
+                (device_id, lat, lon, last_heading, last_pitch, last_roll, last_seen)
             VALUES ($1, $2, $3, $4, $5, $6, NOW())
             ON CONFLICT (device_id) DO UPDATE SET
-                rtsp_url    = EXCLUDED.rtsp_url,
                 lat         = EXCLUDED.lat,
                 lon         = EXCLUDED.lon,
-                bearing_deg = EXCLUDED.bearing_deg,
-                fov_deg     = EXCLUDED.fov_deg,
+                last_heading = EXCLUDED.last_heading,
+                last_pitch   = EXCLUDED.last_pitch,
+                last_roll    = EXCLUDED.last_roll,
                 last_seen   = NOW()
             """,
-            device_id, rtsp_url, lat, lon, bearing_deg, fov_deg,
+            device_id,
+            lat,
+            lon,
+            heading,
+            pitch,
+            roll,
         )
     logger.debug("DB: upserted camera %s", device_id)

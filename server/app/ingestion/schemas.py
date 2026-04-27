@@ -1,15 +1,31 @@
+from typing import List
+
 from pydantic import BaseModel
 
 
-class CameraMetadata(BaseModel):
+class GPS(BaseModel):
     lat: float
     lon: float
-    bearing_deg: float   # compass bearing camera points (0=North, 90=East)
-    fov_deg: float       # horizontal field of view in degrees
 
 
-class DevicePayload(BaseModel):
-    device_id: str
+class IMU(BaseModel):
+    heading: float   # compass bearing (0=North, 90=East)
+    pitch: float     # tilt up/down in degrees (negative = tilted down)
+    roll: float      # sideways tilt in degrees
+
+
+class CameraInfo(BaseModel):
+    gps: GPS
+    imu: IMU
+    fov: float       # horizontal field of view in degrees
+
+
+class NCoord(BaseModel):
+    xnorm: float     # [0, 1] horizontal position in frame
+    ynorm: float     # [0, 1] vertical position in frame
+
+
+class TelemetryPayload(BaseModel):
+    cameras: CameraInfo
+    ncoords: List[NCoord]
     timestamp: float
-    rtsp_url: str        # e.g. rtsp://192.168.1.x:8554/cam_01
-    camera: CameraMetadata

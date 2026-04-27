@@ -10,25 +10,21 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
-  mediamtx:
-    image: bluenviron/mediamtx:latest
-    ports:
-      - "8554:8554"
-      - "1935:1935"
-      - "8888:8888"
-      - "8889:8889"
-
-  simulator:
-    image: sauron-simulator:latest
+  server:
     build:
-      context: ./mock
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
     depends_on:
-      - mediamtx
+      - db
+    env_file:
+      - .env
+    volumes:
+      - ./certs:/app/certs:ro
+      - .:/app
     environment:
-      - SERVER_URL=http://host.docker.internal:8000
-      - RTSP_HOST=rtsp://mediamtx:8554
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      DATABASE_URL: postgresql://iotel:iotel@db:5432/iotel
 
 volumes:
   pgdata:

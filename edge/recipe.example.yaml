@@ -1,0 +1,49 @@
+ComponentName: com.sauron.edge
+ComponentVersion: "1.0.0"
+ComponentDescription: >
+  Sauron edge surveillance component. Captures video, detects moving objects
+  via MOG2 background subtraction, reads GPS and IMU sensors, and publishes
+  telemetry to AWS IoT Core via Greengrass IPC.
+ComponentPublisher: Sauron
+ComponentConfiguration:
+  DefaultConfiguration:
+    configFilePath: "~/.config/sauron/config.yaml"
+ComponentDependencies:
+  aws.greengrass.Nucleus:
+    VersionRequirement: ">=2.9.0"
+    DependencyType: SOFT
+Manifests:
+  - Platform:
+      os: linux
+      architecture: aarch64  # Raspberry Pi 64-bit OS (arm64)
+    Lifecycle:
+      Install:
+        RequiresPrivilege: true
+        Script: |
+          set -e
+          # Install uv if not present
+          if ! command -v uv &>/dev/null; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          # Create virtualenv and install dependencies using exact Python version
+          cd {artifacts:decompressedPath}/sauron-edge
+          uv sync --python 3.11.2
+      Run:
+        Script: |
+          set -e
+          export PATH="$HOME/.local/bin:$PATH"
+          cd {artifacts:decompressedPath}/sauron-edge
+          uv run sauron-edge
+    Artifacts:
+      - URI: "s3://REPLACE_WITH_YOUR_BUCKET/sauron-edge/sauron-edge.zip"
+        Unarchive: ZIP
+ComponentAccessControl:
+  aws.greengrass.ipc.mqttproxy:
+    com.sauron.edge:mqttproxy:1:
+      policyDescription: >
+        Allow the edge component to publish telemetry to its device topic.
+      operations:
+        - aws.greengrass#PublishToIoTCore
+      resources:
+        - "devices/*/telemetry"

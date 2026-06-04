@@ -1,0 +1,41 @@
+[project]
+name = "sauron-edge"
+version = "0.1.0"
+description = "Sauron surveillance edge component — runs as AWS Greengrass v2 component"
+readme = "README.md"
+requires-python = "~=3.11.2"
+dependencies = [
+    # Computer vision
+    "opencv-python-headless>=4.6.0",
+    "numpy>=1.24,<2.0.0",
+    # Configuration
+    "pyyaml>=6.0",
+    "pydantic>=2.7",
+    "python-dotenv>=1.0",
+    # Hardware sensors
+    "pyserial>=3.5",
+    "pynmea2>=1.19",
+    "adafruit-circuitpython-bno055>=5.4",
+    # AWS Greengrass v2 IPC + IoT Core publish
+    "awsiotsdk>=1.21",
+    # Monitoring dashboard
+    "flask>=3.0",
+]
+
+[project.optional-dependencies]
+# Install these on the developer machine (not on the Pi) to use scripts/deploy.py
+deploy = [
+    "boto3>=1.34",
+    "python-dotenv>=1.0",
+    "click>=8.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+sauron-edge = "sauron_edge.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sauron_edge"]

@@ -1,0 +1,75 @@
+# Sauron Edge — Example Configuration
+# ─────────────────────────────────────
+# Copy this file to ~/.config/sauron/config.yaml (or wherever
+# CONFIGURATION_FILE_PATH points) and edit as needed.
+#
+# If the file does not exist at startup, the component creates it with
+# these exact defaults.
+
+# ─────────────────────────────────────
+# Camera
+# ─────────────────────────────────────
+# 'raspi' opens /dev/video0 via V4L2 (Raspberry Pi embedded camera).
+# 'rtsp'  opens a network stream via FFMPEG; set camera_rtsp_url below.
+camera_source: raspi
+
+# Required when camera_source is 'rtsp'. Ignored for 'raspi'.
+# Example: rtsp://admin:password@192.168.1.100:554/stream1
+camera_rtsp_url: ""
+
+# Desired capture resolution as "WIDTHxHEIGHT". The actual resolution
+# may differ depending on what the device supports.
+camera_dimensions: "640x480"
+
+# Horizontal field of view of the lens in degrees.
+# This value is embedded in every telemetry message so the server can
+# triangulate — measure your lens or use the manufacturer datasheet.
+camera_fov: 90.0
+
+# Desired capture frame rate. Higher values increase CPU load.
+camera_fps: 24
+
+# ─────────────────────────────────────
+# Publishing
+# ─────────────────────────────────────
+# Number of telemetry messages published per second to IoT Core.
+# Each message contains the detections from the most recently processed frame.
+publish_rate_hz: 5.0
+
+# Port for the local monitoring dashboard (Flask).
+# Access it at http://<device-ip>:5000 from any browser on the same network.
+# Set to 0 to disable the dashboard (not recommended — it has near-zero overhead).
+dashboard_port: 5000
+
+# ─────────────────────────────────────
+# Motion detection (MOG2)
+# ─────────────────────────────────────
+detection:
+  # Background model learning rate. -1 lets OpenCV choose automatically.
+  # Values closer to 0 make the model adapt slowly (good for static scenes).
+  # Values closer to 1 make it adapt fast (useful if lighting changes often).
+  learning_rate: -1.0
+
+  # Minimum foreground blob area in pixels² to be reported as a detection.
+  # Increase this if you are getting too many false positives from noise.
+  # Decrease it if small/distant objects are being missed.
+  min_contour_area: 200.0
+
+  # MOG2 sensitivity threshold. Lower = more sensitive (more false positives).
+  # Higher = less sensitive (may miss slow-moving or small objects).
+  var_threshold: 16.0
+
+  # Size of the elliptical morphological kernel used for cleanup.
+  # Larger values remove more noise but may merge nearby detections.
+  morph_kernel_size: 5
+
+# ─────────────────────────────────────
+# Hardware sensors
+# ─────────────────────────────────────
+sensors:
+  # UART device path for the GPS module (matches /dev/serial0 on RPi).
+  gps_port: /dev/serial0
+  gps_baud: 9600
+
+  # Set to false to skip BNO055 IMU initialisation (e.g. if not fitted).
+  imu_enabled: true

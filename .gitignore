@@ -1,0 +1,4 @@
+**/.env
+**/.env*
+edge/dist/
+reference.txt

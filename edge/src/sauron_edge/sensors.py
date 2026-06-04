@@ -1,0 +1,302 @@
+"""
+Hardware sensor reader — GPS (UART/NMEA) and IMU (I2C/BNO055).
+
+Both sensors are optional. If a sensor fails to initialise, the thread logs
+a warning and continues running with zero/default values for that sensor.
+This allows the pipeline to function (and publish) even on hardware that
+only has a camera attached.
+
+Thread safety: all reads go through a threading.Lock.  get_state() returns
+a cheap shallow copy — callers never hold the lock.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from copy import copy
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+# Seconds between sensor poll iterations
+_DEFAULT_POLL_INTERVAL_S = 0.05  # 20 Hz
+
+
+# ---------------------------------------------------------------------------
+# Shared state dataclass
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SensorState:
+    """
+    Snapshot of the latest sensor readings.
+    All fields default to safe zeros so callers always get a valid object
+    even before the first successful sensor read.
+    """
+
+    # GPS
+    lat: float = 0.0
+    """Latitude in decimal degrees. 0.0 if no GPS fix."""
+
+    lon: float = 0.0
+    """Longitude in decimal degrees. 0.0 if no GPS fix."""
+
+    gps_sats: int = 0
+    """Number of tracked satellites. 0 if no fix."""
+
+    gps_locked: bool = False
+    """True when the GPS module reports a valid fix."""
+
+    # IMU
+    heading: float = 0.0
+    """Compass bearing in degrees (0 = North). 0.0 if IMU unavailable."""
+
+    pitch: float = 0.0
+    """Pitch (nose-up/down). 0.0 if IMU unavailable."""
+
+    roll: float = 0.0
+    """Roll (sideways tilt). 0.0 if IMU unavailable."""
+
+    imu_calibrated: bool = False
+    """True when system calibration level >= 1."""
+
+    imu_calibration_status: str = "Sys:0 G:0 A:0 M:0"
+    """Human-readable calibration string, e.g. 'Sys:3 G:3 A:3 M:3'."""
+
+
+# ---------------------------------------------------------------------------
+# Reader thread
+# ---------------------------------------------------------------------------
+
+
+class SensorReader(threading.Thread):
+    """
+    Long-lived daemon thread that polls GPS and IMU continuously.
+
+    Usage::
+
+        reader = SensorReader(gps_port="/dev/serial0", gps_baud=9600, imu_enabled=True)
+        reader.start()
+        ...
+        state = reader.get_state()   # thread-safe snapshot
+        ...
+        reader.stop()
+        reader.join(timeout=3.0)
+    """
+
+    def __init__(
+        self,
+        gps_port: str,
+        gps_baud: int,
+        imu_enabled: bool,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL_S,
+    ) -> None:
+        super().__init__(name="sensor-reader", daemon=True)
+        self._gps_port = gps_port
+        self._gps_baud = gps_baud
+        self._imu_enabled = imu_enabled
+        self._poll_interval = poll_interval
+
+        self._state = SensorState()
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+
+    # ------------------------------------------------------------------
+    # Public API (called from the main thread)
+    # ------------------------------------------------------------------
+
+    def get_state(self) -> SensorState:
+        """Return a copy of the current sensor state. Never blocks for long."""
+        with self._lock:
+            return copy(self._state)
+
+    def stop(self) -> None:
+        """Signal the thread to exit cleanly."""
+        logger.info("SensorReader: stop requested")
+        self._stop_event.set()
+
+    # ------------------------------------------------------------------
+    # Thread body
+    # ------------------------------------------------------------------
+
+    def run(self) -> None:  # noqa: C901  (complexity is unavoidable here)
+        logger.info(
+            "SensorReader: starting — gps_port=%s gps_baud=%d imu_enabled=%s",
+            self._gps_port, self._gps_baud, self._imu_enabled,
+        )
+
+        # ---- Attempt GPS init ----
+        ser = None
+        gps_active = False
+        try:
+            import serial  # pyserial
+            ser = serial.Serial(self._gps_port, baudrate=self._gps_baud, timeout=1)
+            gps_active = True
+            logger.info("SensorReader: GPS serial port %s opened at %d baud", self._gps_port, self._gps_baud)
+        except Exception as exc:
+            logger.warning(
+                "SensorReader: GPS unavailable — will publish zero coordinates. Reason: %s", exc
+            )
+
+        # pynmea2 is required for GPS parsing
+        pynmea2 = None
+        if gps_active:
+            try:
+                import pynmea2 as _pynmea2
+                pynmea2 = _pynmea2
+                logger.info("SensorReader: pynmea2 loaded for NMEA parsing")
+            except ImportError:
+                logger.warning(
+                    "SensorReader: pynmea2 not importable — GPS parsing disabled"
+                )
+                gps_active = False
+
+        # ---- Attempt IMU init ----
+        imu_sensor = None
+        imu_active = False
+        if self._imu_enabled:
+            try:
+                import board  # adafruit-blinka
+                import busio
+                import adafruit_bno055
+
+                i2c = busio.I2C(board.SCL, board.SDA)
+                imu_sensor = adafruit_bno055.BNO055_I2C(i2c)
+                imu_active = True
+                logger.info("SensorReader: BNO055 IMU initialised over I2C")
+            except Exception as exc:
+                logger.warning(
+                    "SensorReader: IMU unavailable — will publish zero orientation. Reason: %s", exc
+                )
+        else:
+            logger.info("SensorReader: IMU disabled in config — skipping init")
+
+        logger.info(
+            "SensorReader: entering poll loop — gps_active=%s imu_active=%s poll_interval=%.3fs",
+            gps_active, imu_active, self._poll_interval,
+        )
+
+        imu_read_count = 0
+        gps_read_count = 0
+        loop_count = 0
+
+        while not self._stop_event.is_set():
+            loop_count += 1
+
+            # ---- Read IMU ----
+            if imu_active and imu_sensor is not None:
+                try:
+                    euler = imu_sensor.euler
+                    sys_cal, gyro_cal, accel_cal, mag_cal = imu_sensor.calibration_status
+                    cal_str = f"Sys:{sys_cal} G:{gyro_cal} A:{accel_cal} M:{mag_cal}"
+
+                    with self._lock:
+                        if euler is not None and euler.count(None) == 0:
+                            self._state.heading = round(float(euler[0]) % 360.0, 2)
+                            self._state.roll = round(float(euler[1]), 2)
+                            self._state.pitch = round(float(euler[2]), 2)
+                        self._state.imu_calibrated = sys_cal >= 1
+                        self._state.imu_calibration_status = cal_str
+
+                    imu_read_count += 1
+                    logger.debug(
+                        "SensorReader [loop=%d]: IMU heading=%.2f roll=%.2f pitch=%.2f cal=%s",
+                        loop_count,
+                        self._state.heading,
+                        self._state.roll,
+                        self._state.pitch,
+                        cal_str,
+                    )
+
+                except Exception as exc:
+                    logger.debug(
+                        "SensorReader [loop=%d]: IMU read error (transient) — %s",
+                        loop_count, exc,
+                    )
+
+            # ---- Read GPS ----
+            if gps_active and ser is not None and pynmea2 is not None:
+                try:
+                    bytes_waiting = ser.in_waiting
+                    if bytes_waiting > 0:
+                        raw_line = ser.readline().decode("utf-8", errors="ignore").strip()
+
+                        logger.debug(
+                            "SensorReader [loop=%d]: NMEA line — %s", loop_count, raw_line
+                        )
+
+                        if raw_line.startswith("$GPGGA"):
+                            try:
+                                msg = pynmea2.parse(raw_line)
+                                if msg.is_valid:
+                                    with self._lock:
+                                        self._state.lat = round(float(msg.latitude), 6)
+                                        self._state.lon = round(float(msg.longitude), 6)
+                                        self._state.gps_sats = int(msg.num_sats)
+                                        self._state.gps_locked = True
+                                    gps_read_count += 1
+                                    logger.debug(
+                                        "SensorReader [loop=%d]: GPS fix — lat=%.6f lon=%.6f sats=%d",
+                                        loop_count,
+                                        self._state.lat,
+                                        self._state.lon,
+                                        self._state.gps_sats,
+                                    )
+                                else:
+                                    with self._lock:
+                                        self._state.gps_locked = False
+                                    logger.debug(
+                                        "SensorReader [loop=%d]: $GPGGA received but fix invalid",
+                                        loop_count,
+                                    )
+                            except pynmea2.ParseError as exc:
+                                logger.debug(
+                                    "SensorReader [loop=%d]: NMEA parse error — %s", loop_count, exc
+                                )
+                    else:
+                        logger.debug(
+                            "SensorReader [loop=%d]: GPS serial — no bytes waiting", loop_count
+                        )
+
+                except Exception as exc:
+                    logger.debug(
+                        "SensorReader [loop=%d]: GPS read error (transient) — %s",
+                        loop_count, exc,
+                    )
+
+            # Periodic info log so we know the thread is alive
+            if loop_count % 200 == 0:
+                state_snap = self.get_state()
+                logger.info(
+                    "SensorReader: heartbeat [loop=%d] — GPS locked=%s (%.6f, %.6f) sats=%d | "
+                    "IMU heading=%.1f pitch=%.1f roll=%.1f cal=%s | "
+                    "imu_reads=%d gps_reads=%d",
+                    loop_count,
+                    state_snap.gps_locked,
+                    state_snap.lat,
+                    state_snap.lon,
+                    state_snap.gps_sats,
+                    state_snap.heading,
+                    state_snap.pitch,
+                    state_snap.roll,
+                    state_snap.imu_calibration_status,
+                    imu_read_count,
+                    gps_read_count,
+                )
+
+            time.sleep(self._poll_interval)
+
+        # ---- Cleanup ----
+        if ser is not None:
+            try:
+                ser.close()
+                logger.info("SensorReader: GPS serial port closed")
+            except Exception as exc:
+                logger.debug("SensorReader: error closing serial port — %s", exc)
+
+        logger.info(
+            "SensorReader: thread exited — total loops=%d imu_reads=%d gps_reads=%d",
+            loop_count, imu_read_count, gps_read_count,
+        )

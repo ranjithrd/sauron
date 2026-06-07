@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
@@ -58,6 +59,11 @@ app.include_router(dashboard_router)
 import os
 os.makedirs("app/static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse("app/static/index.html")
 
 
 @app.get("/health")

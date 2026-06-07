@@ -20,21 +20,26 @@ Threading model:
   - dashboard thread (daemon): Flask server on port 5000, reads SharedState
   - Main thread: owns detection (MOG2 is stateful and not thread-safe) and publishing
 """
+
 from __future__ import annotations
 
 import logging
 import signal
+import subprocess
 import sys
 import time
+
+import cv2
 
 from sauron_edge.camera import make_camera
 from sauron_edge.config import get_configuration
 from sauron_edge.dashboard import start_dashboard
-from sauron_edge.detection import MOG2Detector
+from sauron_edge.detection import DetectionResult, MOG2Detector
 from sauron_edge.publisher import GreengrassPublisher
 from sauron_edge.schemas import TelemetryPayload
 from sauron_edge.sensors import SensorReader
 from sauron_edge.shared_state import SharedState
+from sauron_edge.stability import DetectionStabilizer
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -142,12 +147,30 @@ def main() -> None:  # noqa: C901
         var_threshold=cfg.detection.var_threshold,
         min_contour_area=cfg.detection.min_contour_area,
         morph_kernel_size=cfg.detection.morph_kernel_size,
+        process_scale=cfg.detection.process_scale,
+        blur_kernel_size=cfg.detection.blur_kernel_size,
     )
 
     sensor_reader = SensorReader(
         gps_port=cfg.sensors.gps_port,
         gps_baud=cfg.sensors.gps_baud,
         imu_enabled=cfg.sensors.imu_enabled,
+        gps_default_lat=cfg.sensors.gps_default_lat,
+        gps_default_lon=cfg.sensors.gps_default_lon,
+        imu_default_heading=cfg.sensors.imu_default_heading,
+        imu_default_pitch=cfg.sensors.imu_default_pitch,
+        imu_default_roll=cfg.sensors.imu_default_roll,
+        gps_override=cfg.sensors.gps_override,
+        gps_override_lat=cfg.sensors.gps_override_lat,
+        gps_override_lon=cfg.sensors.gps_override_lon,
+        imu_override=cfg.sensors.imu_override,
+        imu_override_heading=cfg.sensors.imu_override_heading,
+        imu_override_pitch=cfg.sensors.imu_override_pitch,
+        imu_override_roll=cfg.sensors.imu_override_roll,
+    )
+
+    stabilizer = DetectionStabilizer(
+        min_stable_frames=cfg.detection.min_stable_frames,
     )
 
     publisher = GreengrassPublisher()
@@ -162,7 +185,9 @@ def main() -> None:  # noqa: C901
         camera.start()
         logger.info("Camera started successfully")
     except Exception as exc:
-        logger.critical("Camera startup failed — cannot continue: %s", exc, exc_info=True)
+        logger.critical(
+            "Camera startup failed — cannot continue: %s", exc, exc_info=True
+        )
         sys.exit(1)
 
     # Sensor reader — always starts; individual sensors are optional
@@ -173,7 +198,9 @@ def main() -> None:  # noqa: C901
     # Greengrass IPC — attempt connection; failures are non-fatal (will retry on publish)
     logger.info("Connecting to Greengrass IPC...")
     if publisher.connect():
-        logger.info("Greengrass IPC connected — publishing to topic: %s", publisher.topic)
+        logger.info(
+            "Greengrass IPC connected — publishing to topic: %s", publisher.topic
+        )
     else:
         logger.warning(
             "Greengrass IPC connection failed at startup — will retry on first publish. "
@@ -200,10 +227,25 @@ def main() -> None:  # noqa: C901
     total_publishes: int = 0
     total_publish_failures: int = 0
 
+    # CPU temperature — polled every 10 s via vcgencmd
+    _cpu_temp_c: float = 0.0
+    _last_temp_poll: float = 0.0
+    _TEMP_POLL_INTERVAL_S: float = 10.0
+
+    # Camera hardware info (read once after start)
+    _cam_fps: float = float(cfg.camera_fps)
+    _cam_w: int = cfg.camera_width()
+    _cam_h: int = cfg.camera_height()
+    if hasattr(camera, "actual_fps"):
+        _cam_fps = camera.actual_fps  # type: ignore[attr-defined]
+        _cam_w = camera.actual_width  # type: ignore[attr-defined]
+        _cam_h = camera.actual_height  # type: ignore[attr-defined]
+
     logger.info(
         "=" * 60 + "\n"
         "Main loop running — publish interval %.3fs (%.1f Hz)\n" + "=" * 60,
-        publish_interval_s, cfg.publish_rate_hz,
+        publish_interval_s,
+        cfg.publish_rate_hz,
     )
 
     frame_skip_log_counter = 0  # for throttling "no frame yet" log
@@ -214,9 +256,7 @@ def main() -> None:  # noqa: C901
 
             # -- Camera health check --
             if not camera.is_alive():
-                logger.error(
-                    "Camera capture thread is no longer alive — shutting down"
-                )
+                logger.error("Camera capture thread is no longer alive — shutting down")
                 break
 
             # -- Read latest frame --
@@ -240,22 +280,54 @@ def main() -> None:  # noqa: C901
 
             total_frames_processed += 1
 
+            # -- Poll CPU temperature every 10 s --
+            _now_mono = time.monotonic()
+            if _now_mono - _last_temp_poll >= _TEMP_POLL_INTERVAL_S:
+                _last_temp_poll = _now_mono
+                try:
+                    _tp = subprocess.run(
+                        ["vcgencmd", "measure_temp"],
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    )
+                    # output format: "temp=73.1'C"
+                    _raw = _tp.stdout.strip()
+                    _cpu_temp_c = float(_raw.split("=")[1].rstrip("'C"))
+                    logger.debug("CPU temperature: %.1f°C", _cpu_temp_c)
+                except Exception as _te:
+                    logger.debug("Could not read CPU temperature: %s", _te)
+
             # -- Run detection --
-            result = detector.process(frame)
-            total_detections += len(result.ncoords)
+            try:
+                result = detector.process(frame)
+            except cv2.error as _cv_err:
+                logger.error(
+                    "Unhandled cv2.error in detector.process — skipping frame: %s",
+                    _cv_err,
+                )
+                result = DetectionResult(ncoords=[])
+
+            # -- Apply temporal stability filter --
+            stable_indices = stabilizer.update(result.ncoords)
+            stable_ncoords = [result.ncoords[i] for i in stable_indices]
+            stable_bboxes = [result.bboxes[i] for i in stable_indices if i < len(result.bboxes)]
+
+            total_detections += len(stable_ncoords)
 
             logger.debug(
-                "Frame #%d: detections=%d raw_contours=%d rejected_area=%d fg_pixels=%d",
+                "Frame #%d: raw_detections=%d stable=%d raw_contours=%d rejected_area=%d fg_pixels=%d",
                 total_frames_processed,
                 len(result.ncoords),
+                len(stable_ncoords),
                 result.n_raw_contours,
                 result.n_rejected_area,
                 result.foreground_pixel_count,
             )
 
             # -- Update shared state for dashboard (every frame) --
-            ncoords_as_dicts = [nc.model_dump() for nc in result.ncoords]
-            state.update_frame(frame, ncoords_as_dicts)
+            ncoords_as_dicts = [nc.model_dump() for nc in stable_ncoords]
+            state.update_frame(frame, ncoords_as_dicts, stable_bboxes)
 
             # Update health every frame (cheap lock + copy)
             current_sensors = sensor_reader.get_state()
@@ -270,6 +342,10 @@ def main() -> None:  # noqa: C901
                 total_publishes=total_publishes,
                 total_publish_failures=total_publish_failures,
                 last_publish_ts=last_publish_ts,
+                camera_fps=_cam_fps,
+                camera_w=_cam_w,
+                camera_h=_cam_h,
+                cpu_temp_c=_cpu_temp_c,
             )
 
             # -- Publish at configured rate --
@@ -277,52 +353,65 @@ def main() -> None:  # noqa: C901
             time_since_last_publish = now - last_publish_monotonic
 
             if time_since_last_publish >= publish_interval_s:
-                sensors = sensor_reader.get_state()
-
-                payload = TelemetryPayload.build(
-                    lat=sensors.lat,
-                    lon=sensors.lon,
-                    heading=sensors.heading,
-                    pitch=sensors.pitch,
-                    roll=sensors.roll,
-                    fov=cfg.camera_fov,
-                    ncoords=result.ncoords,
-                )
-
-                logger.info(
-                    "Telemetry publish #%d — "
-                    "ncoords=%d | "
-                    "GPS locked=%s lat=%.6f lon=%.6f sats=%d | "
-                    "IMU heading=%.1f° pitch=%.1f° roll=%.1f° cal=%s | "
-                    "frames_since_last=%d detections_total=%d",
-                    total_publishes + 1,
-                    len(payload.ncoords),
-                    sensors.gps_locked,
-                    sensors.lat,
-                    sensors.lon,
-                    sensors.gps_sats,
-                    sensors.heading,
-                    sensors.pitch,
-                    sensors.roll,
-                    sensors.imu_calibration_status,
-                    total_frames_processed,
-                    total_detections,
-                )
-
-                success = publisher.publish(payload.model_dump())
-
-                if success:
-                    total_publishes += 1
-                    last_publish_ts = time.time()
-                    state.record_telemetry(payload.model_dump())
+                # Optionally suppress MQTT message when nothing stable is detected
+                if cfg.detection.suppress_empty_publishes and not stable_ncoords:
+                    logger.debug(
+                        "Publish suppressed — no stable detections (suppress_empty_publishes=True)"
+                    )
+                    last_publish_monotonic = now
                 else:
-                    total_publish_failures += 1
-                    logger.warning(
-                        "Publish failed — total_failures=%d total_successes=%d",
-                        total_publish_failures, total_publishes,
+                    sensors = sensor_reader.get_state()
+
+                    payload = TelemetryPayload.build(
+                        lat=sensors.lat,
+                        lon=sensors.lon,
+                        heading=sensors.heading,
+                        pitch=sensors.pitch,
+                        roll=sensors.roll,
+                        fov=cfg.camera_fov,
+                        ncoords=stable_ncoords,
+                        fps=round(_cam_fps, 1),
+                        resolution_w=_cam_w,
+                        resolution_h=_cam_h,
+                        cpu_temp_c=round(_cpu_temp_c, 1) if _cpu_temp_c else None,
                     )
 
-                last_publish_monotonic = now
+                    logger.info(
+                        "Telemetry publish #%d — "
+                        "ncoords=%d (stable) raw=%d | "
+                        "GPS locked=%s lat=%.6f lon=%.6f sats=%d | "
+                        "IMU heading=%.1f° pitch=%.1f° roll=%.1f° cal=%s | "
+                        "frames_since_last=%d detections_total=%d",
+                        total_publishes + 1,
+                        len(payload.ncoords),
+                        len(result.ncoords),
+                        sensors.gps_locked,
+                        sensors.lat,
+                        sensors.lon,
+                        sensors.gps_sats,
+                        sensors.heading,
+                        sensors.pitch,
+                        sensors.roll,
+                        sensors.imu_calibration_status,
+                        total_frames_processed,
+                        total_detections,
+                    )
+
+                    success = publisher.publish(payload.model_dump())
+
+                    if success:
+                        total_publishes += 1
+                        last_publish_ts = time.time()
+                        state.record_telemetry(payload.model_dump())
+                    else:
+                        total_publish_failures += 1
+                        logger.warning(
+                            "Publish failed — total_failures=%d total_successes=%d",
+                            total_publish_failures,
+                            total_publishes,
+                        )
+
+                    last_publish_monotonic = now
 
             # -- Frame-rate pacing --
             # Sleep just enough to match the configured camera FPS.
@@ -370,7 +459,9 @@ def main() -> None:  # noqa: C901
     sensor_reader.stop()
     sensor_reader.join(timeout=5.0)
     if sensor_reader.is_alive():
-        logger.warning("Sensor reader thread did not exit within timeout — continuing shutdown")
+        logger.warning(
+            "Sensor reader thread did not exit within timeout — continuing shutdown"
+        )
 
     logger.info("Disconnecting from Greengrass IPC...")
     publisher.disconnect()

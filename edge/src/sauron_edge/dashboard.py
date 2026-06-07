@@ -14,11 +14,12 @@ Routes:
 All routes tolerate SharedState returning None / empty values — the dashboard
 is always up even if the camera is still initialising.
 """
+
 from __future__ import annotations
 
 import logging
-import time
 import threading
+import time
 from typing import TYPE_CHECKING
 
 import cv2
@@ -32,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 _DASHBOARD_PORT = 5000
 _JPEG_QUALITY = 70
+# Maximum dimensions sent to the browser over MJPEG.
+# Frames larger than this are downscaled before JPEG encoding.
+_MJPEG_MAX_W = 640
+_MJPEG_MAX_H = 480
 
 # Blank grey frame served when no camera data is available yet
 _PLACEHOLDER_FRAME: np.ndarray = np.full((480, 640, 3), 40, dtype=np.uint8)
@@ -69,6 +74,16 @@ def _make_app(state: "SharedState") -> Flask:
             if frame is None:
                 frame = _PLACEHOLDER_FRAME
 
+            # Cap to display size so the JPEG encoder never sees a frame
+            # larger than what the browser renders anyway.
+            h, w = frame.shape[:2]
+            if w > _MJPEG_MAX_W or h > _MJPEG_MAX_H:
+                frame = cv2.resize(
+                    frame,
+                    (_MJPEG_MAX_W, _MJPEG_MAX_H),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+
             ok, buf = cv2.imencode(".jpg", frame, encode_param)
             if not ok:
                 logger.debug("Dashboard: JPEG encode failed — sending placeholder")
@@ -81,9 +96,7 @@ def _make_app(state: "SharedState") -> Flask:
 
             yield (
                 b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n"
-                + buf.tobytes()
-                + b"\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
             )
             time.sleep(0.04)  # ~25 fps cap to the browser
 
@@ -140,6 +153,9 @@ def _make_app(state: "SharedState") -> Flask:
                     "total_publishes": h.total_publishes,
                     "total_publish_failures": h.total_publish_failures,
                     "last_publish_ago_s": last_pub_ago,
+                    "camera_fps": round(h.camera_fps, 1),
+                    "camera_resolution": f"{h.camera_w}x{h.camera_h}",
+                    "cpu_temp_c": round(h.cpu_temp_c, 1),
                 },
                 "current_detections": len(ncoords),
                 "current_ncoords": ncoords,
@@ -289,8 +305,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .err-entry .ets { color: #444; font-size: 0.68rem; }
   .ncoords-dot { display: inline-block; width: 6px; height: 6px;
                  background: var(--green); border-radius: 50%; margin-right: 4px; }
-  #detections-list { font-size: 0.78rem; color: var(--green-dim); }
-  .fps-note { color: #444; font-size: 0.68rem; margin-top: 4px; }
+  #detections-list { font-size: 0.78rem; color: var(--green-dim); max-height: 120px; overflow-y: auto; }
+  #telemetry-list   { max-height: 280px; overflow-y: auto; }
+  #error-log        { max-height: 280px; overflow-y: auto; }
 </style>
 </head>
 <body>
@@ -317,6 +334,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="kv"><span class="label">Publishes OK</span><span class="value" id="pub-ok">—</span></div>
       <div class="kv"><span class="label">Publish failures</span><span class="value" id="pub-fail">—</span></div>
       <div class="kv"><span class="label">Last publish</span><span class="value" id="last-pub">—</span></div>
+      <div class="kv"><span class="label">Camera FPS</span><span class="value" id="cam-fps">—</span></div>
+      <div class="kv"><span class="label">Resolution</span><span class="value" id="cam-res">—</span></div>
+      <div class="kv"><span class="label">CPU Temp</span><span class="value" id="cpu-temp">—</span></div>
     </div>
 
     <!-- Component status -->
@@ -399,6 +419,12 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         ? h.last_publish_ago_s + 's ago'
         : 'never';
 
+      $('cam-fps').textContent  = h.camera_fps + ' fps';
+      $('cam-res').textContent  = h.camera_resolution;
+      const tempEl = $('cpu-temp');
+      tempEl.textContent = h.cpu_temp_c + '°C';
+      tempEl.className   = 'value' + (h.cpu_temp_c >= 80 ? ' warn' : '');
+
       // Component pills
       pill($('c-camera'), h.camera_alive,      ['ALIVE',      'DEAD']);
       pill($('c-sensor'), h.sensor_thread_alive,['ALIVE',     'DEAD']);
@@ -441,6 +467,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
             IMU: hdg=${imu.heading.toFixed(1)}&deg; pitch=${imu.pitch.toFixed(1)}&deg; roll=${imu.roll.toFixed(1)}&deg; |
             FOV: ${p.cameras.fov}&deg; |
             Detections: ${nc}
+            ${p.fps != null ? ' | FPS: ' + p.fps : ''}
+            ${p.resolution_w != null ? ' | Res: ' + p.resolution_w + 'x' + p.resolution_h : ''}
+            ${p.cpu_temp_c != null ? ' | Temp: ' + p.cpu_temp_c + '&deg;C' : ''}
             ${nc > 0 ? '<br>' + p.ncoords.map(c => `(${c.xnorm.toFixed(3)}, ${c.ynorm.toFixed(3)})`).join(' ') : ''}
           </div>
         </div>`;
@@ -457,7 +486,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         el.innerHTML = '<em style="color:#444">No issues logged.</em>';
         return;
       }
-      el.innerHTML = d.entries.slice(0, 20).map(e =>
+      el.innerHTML = d.entries.slice(0, 10).map(e =>
         `<div class="err-entry">
           <span class="ets">${e.ts_str}</span>
           <span class="level-${e.level}"> [${e.level}]</span>
@@ -485,7 +514,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 # ------------------------------------------------------------------
 
 
-def start_dashboard(state: "SharedState", port: int = _DASHBOARD_PORT) -> threading.Thread:
+def start_dashboard(
+    state: "SharedState", port: int = _DASHBOARD_PORT
+) -> threading.Thread:
     """
     Launch the Flask dashboard in a background daemon thread.
 
@@ -498,7 +529,13 @@ def start_dashboard(state: "SharedState", port: int = _DASHBOARD_PORT) -> thread
         logger.info("Dashboard: Flask server starting on http://0.0.0.0:%d", port)
         try:
             # threaded=True so concurrent MJPEG + API requests don't block each other
-            app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False, debug=False)
+            app.run(
+                host="0.0.0.0",
+                port=port,
+                threaded=True,
+                use_reloader=False,
+                debug=False,
+            )
         except Exception as exc:
             logger.error("Dashboard: Flask server crashed — %s", exc, exc_info=True)
 

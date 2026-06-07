@@ -63,6 +63,24 @@ detection:
   # Larger values remove more noise but may merge nearby detections.
   morph_kernel_size: 5
 
+  # Fraction of the capture resolution used internally for MOG2 processing.
+  # At 0.5 (default), a 640x480 frame is scaled to 320x240 before detection —
+  # 4× fewer pixels reduces memory pressure substantially on the Pi.
+  # NCoords are normalised so detection accuracy is not affected.
+  # Set to 1.0 to process at full resolution (not recommended on Pi 3/4).
+  # Note: min_contour_area is automatically scaled by process_scale² internally.
+  process_scale: 0.5
+
+  # Minimum consecutive frames a detection must appear in before being published.
+  # Noise and lighting transients typically last 1-2 frames; genuine objects persist.
+  # Set to 1 to disable stability filtering (publish every raw detection).
+  min_stable_frames: 3
+
+  # When true, skip the MQTT publish entirely on frames with no stable detections.
+  # Reduces IoT Core message volume when the scene is quiet.
+  # Heartbeat messages are lost when enabled — disable if you need constant heartbeats.
+  suppress_empty_publishes: false
+
 # ─────────────────────────────────────
 # Hardware sensors
 # ─────────────────────────────────────
@@ -73,3 +91,29 @@ sensors:
 
   # Set to false to skip BNO055 IMU initialisation (e.g. if not fitted).
   imu_enabled: true
+
+  # ── Default fallback values ──────────────────────────────────────────
+  # These are used as the initial sensor state at startup and whenever the
+  # hardware has not yet reported a valid reading. Set to the known fixed
+  # position/orientation of the unit if GPS/IMU is unavailable.
+  gps_default_lat: 0.0
+  gps_default_lon: 0.0
+  imu_default_heading: 0.0
+  imu_default_pitch: 0.0
+  imu_default_roll: 0.0
+
+  # ── Override flags ───────────────────────────────────────────────────
+  # When gps_override is true, the override coordinates are ALWAYS published
+  # regardless of what the GPS hardware reports. Use this when the GPS is
+  # fried but you know the unit's fixed installation position.
+  gps_override: false
+  gps_override_lat: 0.0
+  gps_override_lon: 0.0
+
+  # When imu_override is true, the override orientation is ALWAYS published
+  # regardless of what the IMU reports. Use when the IMU is damaged but you
+  # know the unit's fixed mounting direction.
+  imu_override: false
+  imu_override_heading: 0.0
+  imu_override_pitch: 0.0
+  imu_override_roll: 0.0

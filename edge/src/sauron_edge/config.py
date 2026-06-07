@@ -6,6 +6,7 @@ Mirrors the Go agent's approach:
 - File is created with defaults if it doesn't exist
 - In-process cache with optional refetch
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,14 +36,43 @@ class DetectionConfig(BaseModel):
     learning_rate: float = -1.0
     """MOG2 learning rate. -1 = automatic (recommended)."""
 
-    min_contour_area: float = 200.0
+    min_contour_area: float = 500.0
     """Minimum foreground blob area in pixels². Smaller blobs are ignored."""
 
     var_threshold: float = 16.0
     """MOG2 varThreshold. Lower values = more sensitive to change."""
 
-    morph_kernel_size: int = 5
+    morph_kernel_size: int = 7
     """Size of the elliptical morphological kernel used for noise removal."""
+
+    blur_kernel_size: int = 5
+    """
+    Size of the Gaussian blur kernel applied to each frame before MOG2.
+    Must be odd. Reduces CMOS sensor noise and prevents spurious detections
+    in static scenes. Set to 1 to disable.
+    """
+
+    process_scale: float = 0.5
+    """
+    Fraction of the capture resolution used internally for MOG2 processing.
+    0.5 means 320x240 when capturing at 640x480 — reduces memory by 4× with
+    negligible accuracy loss since NCoords are normalised anyway.
+    Set to 1.0 to process at full resolution (higher memory pressure).
+    """
+
+    min_stable_frames: int = 3
+    """
+    Minimum number of consecutive frames a detection must appear in before it is
+    forwarded to the publisher. Increases this to suppress flicker/noise; set to 1
+    to disable stability filtering entirely.
+    """
+
+    suppress_empty_publishes: bool = False
+    """
+    When True, skip the MQTT publish entirely on frames where the stability filter
+    produces no confirmed detections. Reduces IoT Core message volume when the
+    scene is quiet. Heartbeat at publish_rate_hz is lost when enabled.
+    """
 
 
 class SensorsConfig(BaseModel):
@@ -56,6 +86,53 @@ class SensorsConfig(BaseModel):
 
     imu_enabled: bool = True
     """Whether to attempt to initialise the BNO055 IMU over I2C."""
+
+    # ---- Default fallback values (used when sensor is absent / unlocked) ----
+
+    gps_default_lat: float = 0.0
+    """Fallback latitude when GPS has no fix. Used as initial state on startup."""
+
+    gps_default_lon: float = 0.0
+    """Fallback longitude when GPS has no fix. Used as initial state on startup."""
+
+    imu_default_heading: float = 0.0
+    """Fallback compass bearing when IMU is absent or uncalibrated."""
+
+    imu_default_pitch: float = 0.0
+    """Fallback pitch when IMU is absent or uncalibrated."""
+
+    imu_default_roll: float = 0.0
+    """Fallback roll when IMU is absent or uncalibrated."""
+
+    # ---- Override flags (force fixed values even if sensor is healthy) ----
+
+    gps_override: bool = False
+    """
+    When True, always publish gps_override_lat / gps_override_lon regardless of
+    what the GPS module reports. Use when the GPS is fried but you know the unit's
+    fixed position.
+    """
+
+    gps_override_lat: float = 0.0
+    """Override latitude. Effective only when gps_override is True."""
+
+    gps_override_lon: float = 0.0
+    """Override longitude. Effective only when gps_override is True."""
+
+    imu_override: bool = False
+    """
+    When True, always publish imu_override_heading / pitch / roll regardless of
+    what the IMU reports. Use when the IMU is fried but you know the fixed orientation.
+    """
+
+    imu_override_heading: float = 0.0
+    """Override compass bearing. Effective only when imu_override is True."""
+
+    imu_override_pitch: float = 0.0
+    """Override pitch. Effective only when imu_override is True."""
+
+    imu_override_roll: float = 0.0
+    """Override roll. Effective only when imu_override is True."""
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +171,7 @@ class Configuration(BaseModel):
     @classmethod
     def _validate_camera_source(cls, v: str) -> str:
         if v not in ("raspi", "rtsp"):
-            raise ValueError(
-                f"camera_source must be 'raspi' or 'rtsp', got {v!r}"
-            )
+            raise ValueError(f"camera_source must be 'raspi' or 'rtsp', got {v!r}")
         return v
 
     @field_validator("camera_rtsp_url")
@@ -140,13 +215,13 @@ def _ensure_config_file(path: str) -> None:
     if p.exists():
         return
 
-    logger.warning(
-        "Config file not found at %s — creating with default values", path
-    )
+    logger.warning("Config file not found at %s — creating with default values", path)
     p.parent.mkdir(parents=True, exist_ok=True)
 
     defaults = Configuration()
-    content = yaml.dump(defaults.model_dump(), default_flow_style=False, sort_keys=False)
+    content = yaml.dump(
+        defaults.model_dump(), default_flow_style=False, sort_keys=False
+    )
     p.write_text(content, encoding="utf-8")
     logger.info("Default configuration written to %s", path)
 

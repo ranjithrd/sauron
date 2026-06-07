@@ -1,0 +1,177 @@
+RTSP Stream from File on Raspberry Pi — Background Procedure
+=============================================================
+
+Goal: serve a video file as a live RTSP stream from the Pi, keeping it running
+in the background even after you disconnect your SSH session. The recommended
+approach is tmux — it creates a persistent, shareable terminal session that
+survives disconnects and can be attached to from any SSH client.
+
+─────────────────────────────────────────────────────────────────────────────
+PART 1 — Install dependencies
+─────────────────────────────────────────────────────────────────────────────
+
+1a. Install tmux (persistent terminal multiplexer):
+
+    sudo apt-get update && sudo apt-get install -y tmux
+
+1b. Install mediamtx — a single-binary RTSP/WebRTC/HLS media server.
+    It requires no system libraries and runs entirely in userspace.
+    Replace the version/arch as needed (arm64 for Pi 4/5, armv7 for Pi 3):
+
+    VERSION=v1.9.1
+    ARCH=arm64         # use 'armv7' for 32-bit Pi OS
+    curl -sL "https://github.com/bluenviron/mediamtx/releases/download/${VERSION}/mediamtx_${VERSION}_linux_${ARCH}.tar.gz" \
+        | tar -xz -C /usr/local/bin mediamtx
+    chmod +x /usr/local/bin/mediamtx
+
+1c. Confirm ffmpeg is installed:
+
+    ffmpeg -version || sudo apt-get install -y ffmpeg
+
+
+─────────────────────────────────────────────────────────────────────────────
+PART 2 — Start the RTSP server in a named tmux session
+─────────────────────────────────────────────────────────────────────────────
+
+A tmux session named "rtsp" will host both the server and the publisher.
+The session persists after you disconnect SSH.
+
+2a. Create the shared tmux session (if it doesn't already exist):
+
+    tmux new-session -d -s rtsp
+
+    This starts the session detached (-d) so you don't land inside it yet.
+
+2b. Open a window for mediamtx inside the session:
+
+    tmux new-window -t rtsp -n server
+
+2c. Start mediamtx (default config listens on :8554 for RTSP):
+
+    tmux send-keys -t rtsp:server 'mediamtx' Enter
+
+    mediamtx is now running and accepting RTSP publishers on port 8554.
+    The RTSP URL consumers will use is:  rtsp://<PI_IP>:8554/live
+
+
+─────────────────────────────────────────────────────────────────────────────
+PART 3 — Publish a file as an RTSP stream
+─────────────────────────────────────────────────────────────────────────────
+
+Replace /path/to/video.mp4 with your actual file path.
+Replace <PI_IP> with the Pi's LAN IP (or 127.0.0.1 if consuming locally).
+
+3a. Open a second window for the ffmpeg publisher:
+
+    tmux new-window -t rtsp -n publisher
+
+3b. Send the ffmpeg command into that window:
+
+    tmux send-keys -t rtsp:publisher \
+      'ffmpeg -re -stream_loop -1 -i /path/to/video.mp4 \
+              -c copy -f rtsp rtsp://127.0.0.1:8554/live' \
+      Enter
+
+    Flags explained:
+      -re               — read input at its native frame rate (simulates a live camera)
+      -stream_loop -1   — loop the file forever (remove if single-pass is wanted)
+      -i <file>         — input video file
+      -c copy           — remux without re-encoding (low CPU; file must be H.264/AAC)
+      -f rtsp           — output format
+      rtsp://...        — destination path on mediamtx (can be any path segment)
+
+    If the file needs re-encoding (e.g. it's MJPEG), replace -c copy with:
+      -c:v libx264 -preset ultrafast -tune zerolatency -c:a aac
+
+
+─────────────────────────────────────────────────────────────────────────────
+PART 4 — Attach, detach, and monitor the session
+─────────────────────────────────────────────────────────────────────────────
+
+Attach to the session to see live output from either window:
+
+    tmux attach -t rtsp
+
+Switch between windows inside tmux:
+    Ctrl-B, then 0  → window 0 (the original shell)
+    Ctrl-B, then 1  → window "server" (mediamtx)
+    Ctrl-B, then 2  → window "publisher" (ffmpeg)
+    Ctrl-B, then n  → next window
+    Ctrl-B, then w  → list all windows
+
+Detach without stopping anything (session keeps running in background):
+    Ctrl-B, then D
+
+Check whether the session is alive from a fresh SSH login:
+
+    tmux ls          # lists all sessions
+    tmux attach -t rtsp
+
+List all windows in the session:
+
+    tmux list-windows -t rtsp
+
+
+─────────────────────────────────────────────────────────────────────────────
+PART 5 — Consuming the RTSP stream in Sauron Edge
+─────────────────────────────────────────────────────────────────────────────
+
+In ~/.config/sauron/config.yaml (or CONFIGURATION_FILE_PATH):
+
+    camera_source: rtsp
+    camera_rtsp_url: rtsp://<PI_IP>:8554/live
+
+The edge component will connect to this URL with ffmpeg under the hood.
+Use 127.0.0.1 as the host if the consumer runs on the same Pi as mediamtx.
+
+
+─────────────────────────────────────────────────────────────────────────────
+PART 6 — Auto-start on boot (optional)
+─────────────────────────────────────────────────────────────────────────────
+
+Create /etc/systemd/system/rtsp-stream.service:
+
+    [Unit]
+    Description=RTSP media server + file publisher
+    After=network.target
+
+    [Service]
+    User=pi
+    WorkingDirectory=/home/pi
+    ExecStartPre=/bin/bash -c 'tmux kill-session -t rtsp 2>/dev/null; true'
+    ExecStart=/bin/bash -c '\
+        tmux new-session -d -s rtsp && \
+        tmux new-window -t rtsp -n server && \
+        tmux send-keys -t rtsp:server "mediamtx" Enter && \
+        sleep 2 && \
+        tmux new-window -t rtsp -n publisher && \
+        tmux send-keys -t rtsp:publisher \
+            "ffmpeg -re -stream_loop -1 -i /path/to/video.mp4 -c copy -f rtsp rtsp://127.0.0.1:8554/live" Enter'
+    ExecStop=/bin/bash -c 'tmux kill-session -t rtsp'
+    Restart=on-failure
+    RestartSec=10
+
+    [Install]
+    WantedBy=multi-user.target
+
+Enable and start:
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable rtsp-stream
+    sudo systemctl start rtsp-stream
+
+
+─────────────────────────────────────────────────────────────────────────────
+QUICK REFERENCE
+─────────────────────────────────────────────────────────────────────────────
+
+Start everything in one line (after dependencies are installed):
+
+    tmux new-session -d -s rtsp \; \
+        new-window -n server \; send-keys 'mediamtx' Enter \; \
+        new-window -n publisher \; send-keys \
+            'ffmpeg -re -stream_loop -1 -i /path/to/video.mp4 -c copy -f rtsp rtsp://127.0.0.1:8554/live' Enter
+
+Consumer RTSP URL:  rtsp://<PI_IP>:8554/live
+VLC test:           vlc rtsp://<PI_IP>:8554/live
+Kill everything:    tmux kill-session -t rtsp

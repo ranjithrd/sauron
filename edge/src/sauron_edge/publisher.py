@@ -13,18 +13,25 @@ machine hostname for local development/testing.
 Topic convention (matches server ingestion):
     devices/{device_id}/telemetry
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import os
 import socket
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _THING_NAME_ENV = "AWS_IOT_THING_NAME"
 _PUBLISH_TIMEOUT_S = 10.0
+
+# Reconnect backoff: starts at 5 s, doubles on each consecutive failure,
+# caps at 60 s.  Resets to the initial value on a successful connection.
+_RECONNECT_BACKOFF_INITIAL_S = 5.0
+_RECONNECT_BACKOFF_MAX_S = 60.0
 
 
 def resolve_device_id() -> str:
@@ -37,7 +44,9 @@ def resolve_device_id() -> str:
     """
     thing_name = os.environ.get(_THING_NAME_ENV, "").strip()
     if thing_name:
-        logger.info("Publisher: device_id = %r (from %s env var)", thing_name, _THING_NAME_ENV)
+        logger.info(
+            "Publisher: device_id = %r (from %s env var)", thing_name, _THING_NAME_ENV
+        )
         return thing_name
 
     hostname = socket.gethostname()
@@ -68,9 +77,22 @@ class GreengrassPublisher:
         self._publish_count: int = 0
         self._failure_count: int = 0
 
+        # Reconnect backoff state — prevents hammering the nucleus with thread
+        # creation requests when IPC is unavailable (AWS_ERROR_THREAD_INSUFFICIENT_RESOURCE).
+        self._reconnect_backoff_s: float = _RECONNECT_BACKOFF_INITIAL_S
+        self._next_reconnect_at: float = (
+            0.0  # epoch seconds; 0 = may connect immediately
+        )
+
+        # Publish-level backoff — set when an UnauthorizedError is received so
+        # that we stop hammering the nucleus with doomed publish requests while
+        # the IPC socket itself remains open.
+        self._publish_backoff_until: float = 0.0
+
         logger.info(
             "Publisher: initialised — device_id=%s topic=%s",
-            self._device_id, self._topic,
+            self._device_id,
+            self._topic,
         )
 
     # ------------------------------------------------------------------
@@ -80,18 +102,38 @@ class GreengrassPublisher:
     def connect(self) -> bool:
         """
         Establish (or re-establish) the Greengrass IPC connection.
-        Returns True on success, False on failure.
+
+        Respects exponential backoff — returns False immediately (without
+        attempting a connection) if the backoff window has not elapsed.
+        This prevents hammering the nucleus with EventLoopGroup allocations
+        when resources are scarce (AWS_ERROR_THREAD_INSUFFICIENT_RESOURCE).
+
+        Returns True on success, False on failure or while backing off.
         """
         if self._connected and self._client is not None:
             logger.debug("Publisher: already connected — skipping connect()")
             return True
 
-        logger.info("Publisher: connecting to Greengrass nucleus IPC...")
+        now = time.monotonic()
+        if now < self._next_reconnect_at:
+            remaining = self._next_reconnect_at - now
+            logger.debug(
+                "Publisher: reconnect backoff active — %.1f s remaining", remaining
+            )
+            return False
+
+        logger.info(
+            "Publisher: connecting to Greengrass nucleus IPC... (backoff=%.1fs)",
+            self._reconnect_backoff_s,
+        )
         try:
             import awsiot.greengrasscoreipc as gg_ipc  # type: ignore[import]
 
             self._client = gg_ipc.connect()
             self._connected = True
+            # Reset backoff on successful connection
+            self._reconnect_backoff_s = _RECONNECT_BACKOFF_INITIAL_S
+            self._next_reconnect_at = 0.0
             logger.info("Publisher: Greengrass IPC connection established")
             return True
 
@@ -101,17 +143,23 @@ class GreengrassPublisher:
                 "Install it with: uv pip install awsiotsdk"
             )
             self._connected = False
+            # Don't backoff for import errors — it's a permanent config issue
             return False
 
         except Exception as exc:
             logger.error(
                 "Publisher: failed to connect to Greengrass IPC — %s. "
-                "Messages will be dropped until reconnection succeeds.",
+                "Next attempt in %.1f s.",
                 exc,
-                exc_info=True,
+                self._reconnect_backoff_s,
             )
             self._client = None
             self._connected = False
+            # Advance backoff (exponential, capped)
+            self._next_reconnect_at = time.monotonic() + self._reconnect_backoff_s
+            self._reconnect_backoff_s = min(
+                self._reconnect_backoff_s * 2.0, _RECONNECT_BACKOFF_MAX_S
+            )
             return False
 
     def disconnect(self) -> None:
@@ -144,14 +192,22 @@ class GreengrassPublisher:
         Returns:
             True if the publish succeeded, False otherwise.
         """
+        # If a previous UnauthorizedError put us in a publish backoff, honour it.
+        now = time.monotonic()
+        if now < self._publish_backoff_until:
+            remaining = self._publish_backoff_until - now
+            logger.debug(
+                "Publisher: publish suppressed — authorization backoff active (%.0f s remaining)",
+                remaining,
+            )
+            return False
+
         # Ensure we have a live connection
         if not self._connected:
-            logger.info("Publisher: not connected — attempting reconnect before publish")
+            logger.info(
+                "Publisher: not connected — attempting reconnect before publish"
+            )
             if not self.connect():
-                logger.error(
-                    "Publisher: reconnect failed — dropping telemetry message #%d",
-                    self._publish_count + 1,
-                )
                 self._failure_count += 1
                 return False
 
@@ -159,19 +215,24 @@ class GreengrassPublisher:
             payload_json = json.dumps(payload)
             payload_bytes = payload_json.encode("utf-8")
         except (TypeError, ValueError) as exc:
-            logger.error("Publisher: payload serialisation failed — %s", exc, exc_info=True)
+            logger.error(
+                "Publisher: payload serialisation failed — %s", exc, exc_info=True
+            )
             self._failure_count += 1
             return False
 
         logger.debug(
             "Publisher: sending %d bytes to topic %r (msg #%d)",
-            len(payload_bytes), self._topic, self._publish_count + 1,
+            len(payload_bytes),
+            self._topic,
+            self._publish_count + 1,
         )
 
         try:
             from awsiot.greengrasscoreipc.model import (  # type: ignore[import]
-                PublishToIoTCoreRequest,
                 QOS,
+                PublishToIoTCoreRequest,
+                UnauthorizedError,
             )
 
             request = PublishToIoTCoreRequest(
@@ -196,12 +257,37 @@ class GreengrassPublisher:
             )
             return True
 
+        except UnauthorizedError:
+            # Authorization is enforced by the Greengrass nucleus IPC policy
+            # (ComponentAccessControl in the recipe) and the IoT Core thing
+            # policy (iot:Publish on the topic ARN).  Reconnecting will not
+            # fix this — back off and log a clear action item instead.
+            self._failure_count += 1
+            logger.error(
+                "Publisher: UnauthorizedError publishing to %s (total_failures=%d). "
+                "This will not resolve itself automatically. "
+                "Check: (1) ComponentAccessControl in the Greengrass recipe grants "
+                "aws.greengrass#PublishToIoTCore on 'devices/*/telemetry', "
+                "(2) the Greengrass thing's IoT Core policy allows iot:Publish on "
+                "arn:aws:iot:REGION:ACCOUNT:topic/devices/*/telemetry. "
+                "Suppressing publish attempts for %.0f s.",
+                self._topic,
+                self._failure_count,
+                _RECONNECT_BACKOFF_MAX_S,
+            )
+            # Do NOT mark connection dirty — the IPC socket itself is fine.
+            # Gate all further publish calls until the backoff window passes.
+            self._publish_backoff_until = time.monotonic() + _RECONNECT_BACKOFF_MAX_S
+            return False
+
         except Exception as exc:
             self._failure_count += 1
             logger.error(
                 "Publisher: publish failed (total_failures=%d) — %s. "
                 "Marking connection as dirty for reconnect.",
-                self._failure_count, exc, exc_info=True,
+                self._failure_count,
+                exc,
+                exc_info=True,
             )
             # Mark connection dirty — will reconnect on next publish()
             self._connected = False

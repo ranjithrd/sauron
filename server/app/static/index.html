@@ -3,53 +3,325 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sauron Tracking Dashboard</title>
-    <!-- Leaflet CSS -->
+    <title>Sauron — Live Tracking</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
     <style>
-        body, html { margin: 0; padding: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-        #map { width: 100%; height: 100%; background: #000; }
-        
-        .panel {
-            position: absolute;
-            top: 20px;
-            right: 20px;
-            width: 300px;
-            background: rgba(20, 20, 25, 0.9);
-            color: #fff;
-            border-radius: 8px;
-            padding: 15px;
-            z-index: 1000;
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            max-height: 80vh;
-            overflow-y: auto;
-        }
-        .panel h2 { margin-top: 0; font-size: 1.2rem; border-bottom: 1px solid #333; padding-bottom: 10px; }
-        .track-item { margin-bottom: 10px; font-size: 0.9rem; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 4px; }
-        .track-id { font-weight: bold; color: #00ffcc; }
-        .track-stats { color: #aaa; margin-top: 5px; }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        /* Custom Leaflet Marker for Objects */
+        body, html {
+            height: 100%;
+            font-family: "SF Mono", "Fira Code", Menlo, monospace;
+            background: #0a0a0f;
+            color: #d0d0e0;
+            overflow: hidden;
+        }
+
+        /* ── Layout ── */
+        #app {
+            display: flex;
+            height: 100vh;
+        }
+
+        #sidebar {
+            width: 320px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            background: #0e0e18;
+            border-right: 1px solid #1e1e30;
+            overflow: hidden;
+        }
+
+        #map-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+            background: #111;
+        }
+
+        /* ── Sidebar header ── */
+        #sidebar-header {
+            padding: 14px 16px 10px;
+            border-bottom: 1px solid #1e1e30;
+            background: #0e0e18;
+            flex-shrink: 0;
+        }
+
+        #sidebar-header h1 {
+            font-size: 0.85rem;
+            letter-spacing: 0.15em;
+            color: #00ffcc;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .stat-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .stat-badge {
+            display: flex;
+            flex-direction: column;
+            background: #14141f;
+            border: 1px solid #2a2a40;
+            border-radius: 4px;
+            padding: 5px 10px;
+            min-width: 80px;
+        }
+
+        .stat-badge .label {
+            font-size: 0.58rem;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 2px;
+        }
+
+        .stat-badge .value {
+            font-size: 1.0rem;
+            color: #00ffcc;
+            font-weight: bold;
+        }
+
+        .stat-badge .value.warn { color: #ffaa00; }
+        .stat-badge .value.ok   { color: #00ffcc; }
+        .stat-badge .value.err  { color: #ff4444; }
+
+        /* ── Sidebar scrollable body ── */
+        #sidebar-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0;
+        }
+
+        #sidebar-body::-webkit-scrollbar { width: 4px; }
+        #sidebar-body::-webkit-scrollbar-track { background: #0e0e18; }
+        #sidebar-body::-webkit-scrollbar-thumb { background: #2a2a40; border-radius: 2px; }
+
+        /* ── Section headers ── */
+        .section-header {
+            position: sticky;
+            top: 0;
+            background: #12121c;
+            border-bottom: 1px solid #1e1e30;
+            padding: 7px 16px;
+            font-size: 0.65rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: #555;
+            z-index: 10;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .section-header .count {
+            background: #1e1e30;
+            border-radius: 10px;
+            padding: 1px 8px;
+            font-size: 0.7rem;
+            color: #00ffcc;
+        }
+
+        /* ── Camera cards ── */
+        .camera-card {
+            padding: 10px 16px;
+            border-bottom: 1px solid #1a1a28;
+            transition: background 0.1s;
+        }
+
+        .camera-card:hover { background: #14141f; }
+
+        .camera-id {
+            font-size: 0.78rem;
+            color: #ffaa00;
+            font-weight: bold;
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #00ffcc;
+            box-shadow: 0 0 4px #00ffcc;
+            flex-shrink: 0;
+        }
+
+        .dot.stale { background: #555; box-shadow: none; }
+
+        .camera-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 3px 10px;
+            font-size: 0.7rem;
+        }
+
+        .kv { display: flex; gap: 4px; }
+        .kv .k { color: #444; width: 56px; flex-shrink: 0; }
+        .kv .v { color: #a0a0c0; }
+
+        .camera-coords {
+            font-size: 0.68rem;
+            color: #6060a0;
+            margin-top: 4px;
+            font-feature-settings: "tnum";
+        }
+
+        .camera-lastseen {
+            font-size: 0.62rem;
+            color: #3a3a60;
+            margin-top: 3px;
+        }
+
+        /* ── Track cards ── */
+        .track-card {
+            padding: 10px 16px;
+            border-bottom: 1px solid #1a1a28;
+            transition: background 0.1s;
+            cursor: pointer;
+        }
+
+        .track-card:hover { background: #14141f; }
+
+        .track-id {
+            font-size: 0.72rem;
+            color: #00ffcc;
+            font-weight: bold;
+            margin-bottom: 5px;
+            word-break: break-all;
+        }
+
+        .track-pos {
+            font-size: 0.72rem;
+            color: #80c0a0;
+            margin-bottom: 3px;
+            font-feature-settings: "tnum";
+        }
+
+        .track-detail-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2px 10px;
+            font-size: 0.68rem;
+        }
+
+        .track-sources {
+            font-size: 0.62rem;
+            color: #4a4a70;
+            margin-top: 4px;
+            word-break: break-word;
+        }
+
+        .speed-tag {
+            display: inline-block;
+            background: #1a2a1a;
+            border: 1px solid #2a4a2a;
+            border-radius: 3px;
+            padding: 1px 6px;
+            font-size: 0.68rem;
+            color: #60c060;
+            margin-bottom: 4px;
+        }
+
+        .speed-tag.fast {
+            background: #2a1a1a;
+            border-color: #4a2a2a;
+            color: #c06060;
+        }
+
+        /* ── Footer / status bar ── */
+        #sidebar-footer {
+            padding: 6px 16px;
+            border-top: 1px solid #1e1e30;
+            font-size: 0.6rem;
+            color: #333;
+            flex-shrink: 0;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .empty-state {
+            padding: 20px 16px;
+            font-size: 0.72rem;
+            color: #333;
+            text-align: center;
+        }
+
+        /* ── Map overlays ── */
         .object-marker {
-            background-color: #00ffcc;
+            background: #00ffcc;
             border-radius: 50%;
             border: 2px solid #fff;
-            box-shadow: 0 0 10px #00ffcc;
+            box-shadow: 0 0 8px #00ffcc;
         }
     </style>
 </head>
 <body>
 
-    <div id="map"></div>
-    
-    <div class="panel">
-        <h2>Live Tracks</h2>
-        <div id="tracks-container">Waiting for data...</div>
+<div id="app">
+
+    <!-- ── Sidebar ── -->
+    <div id="sidebar">
+        <div id="sidebar-header">
+            <h1>Sauron</h1>
+            <div class="stat-row">
+                <div class="stat-badge">
+                    <span class="label">Cameras</span>
+                    <span class="value ok" id="stat-cameras">—</span>
+                </div>
+                <div class="stat-badge">
+                    <span class="label">Tracks</span>
+                    <span class="value" id="stat-tracks">—</span>
+                </div>
+                <div class="stat-badge">
+                    <span class="label">Updated</span>
+                    <span class="value" id="stat-updated" style="font-size:0.75rem">—</span>
+                </div>
+            </div>
+        </div>
+
+        <div id="sidebar-body">
+            <div class="section-header">
+                Cameras
+                <span class="count" id="camera-count">0</span>
+            </div>
+            <div id="cameras-container">
+                <div class="empty-state">Loading cameras…</div>
+            </div>
+
+            <div class="section-header">
+                Live Tracks
+                <span class="count" id="track-count">0</span>
+            </div>
+            <div id="tracks-container">
+                <div class="empty-state">Waiting for data…</div>
+            </div>
+        </div>
+
+        <div id="sidebar-footer">
+            <span>poll 500ms</span>
+            <span id="footer-time">—</span>
+        </div>
     </div>
 
-    <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-    <script src="/static/app.js"></script>
+    <!-- ── Map ── -->
+    <div id="map-container">
+        <div id="map"></div>
+    </div>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="/static/app.js"></script>
 </body>
 </html>

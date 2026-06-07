@@ -9,6 +9,7 @@ only has a camera attached.
 Thread safety: all reads go through a threading.Lock.  get_state() returns
 a cheap shallow copy — callers never hold the lock.
 """
+
 from __future__ import annotations
 
 import logging
@@ -91,6 +92,19 @@ class SensorReader(threading.Thread):
         gps_port: str,
         gps_baud: int,
         imu_enabled: bool,
+        *,
+        gps_default_lat: float = 0.0,
+        gps_default_lon: float = 0.0,
+        imu_default_heading: float = 0.0,
+        imu_default_pitch: float = 0.0,
+        imu_default_roll: float = 0.0,
+        gps_override: bool = False,
+        gps_override_lat: float = 0.0,
+        gps_override_lon: float = 0.0,
+        imu_override: bool = False,
+        imu_override_heading: float = 0.0,
+        imu_override_pitch: float = 0.0,
+        imu_override_roll: float = 0.0,
         poll_interval: float = _DEFAULT_POLL_INTERVAL_S,
     ) -> None:
         super().__init__(name="sensor-reader", daemon=True)
@@ -99,7 +113,23 @@ class SensorReader(threading.Thread):
         self._imu_enabled = imu_enabled
         self._poll_interval = poll_interval
 
-        self._state = SensorState()
+        # Override flags
+        self._gps_override = gps_override
+        self._gps_override_lat = gps_override_lat
+        self._gps_override_lon = gps_override_lon
+        self._imu_override = imu_override
+        self._imu_override_heading = imu_override_heading
+        self._imu_override_pitch = imu_override_pitch
+        self._imu_override_roll = imu_override_roll
+
+        # Initialise state with config-provided defaults (used when sensor is absent/unfixed)
+        self._state = SensorState(
+            lat=gps_default_lat,
+            lon=gps_default_lon,
+            heading=imu_default_heading,
+            pitch=imu_default_pitch,
+            roll=imu_default_roll,
+        )
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
 
@@ -124,7 +154,9 @@ class SensorReader(threading.Thread):
     def run(self) -> None:  # noqa: C901  (complexity is unavoidable here)
         logger.info(
             "SensorReader: starting — gps_port=%s gps_baud=%d imu_enabled=%s",
-            self._gps_port, self._gps_baud, self._imu_enabled,
+            self._gps_port,
+            self._gps_baud,
+            self._imu_enabled,
         )
 
         # ---- Attempt GPS init ----
@@ -132,12 +164,18 @@ class SensorReader(threading.Thread):
         gps_active = False
         try:
             import serial  # pyserial
+
             ser = serial.Serial(self._gps_port, baudrate=self._gps_baud, timeout=1)
             gps_active = True
-            logger.info("SensorReader: GPS serial port %s opened at %d baud", self._gps_port, self._gps_baud)
+            logger.info(
+                "SensorReader: GPS serial port %s opened at %d baud",
+                self._gps_port,
+                self._gps_baud,
+            )
         except Exception as exc:
             logger.warning(
-                "SensorReader: GPS unavailable — will publish zero coordinates. Reason: %s", exc
+                "SensorReader: GPS unavailable — will publish zero coordinates. Reason: %s",
+                exc,
             )
 
         # pynmea2 is required for GPS parsing
@@ -145,6 +183,7 @@ class SensorReader(threading.Thread):
         if gps_active:
             try:
                 import pynmea2 as _pynmea2
+
                 pynmea2 = _pynmea2
                 logger.info("SensorReader: pynmea2 loaded for NMEA parsing")
             except ImportError:
@@ -158,29 +197,59 @@ class SensorReader(threading.Thread):
         imu_active = False
         if self._imu_enabled:
             try:
+                import adafruit_bno055
                 import board  # adafruit-blinka
                 import busio
-                import adafruit_bno055
 
                 i2c = busio.I2C(board.SCL, board.SDA)
                 imu_sensor = adafruit_bno055.BNO055_I2C(i2c)
+
+                # --- Load persisted calibration data ---
+                _CAL_FILE = "/root/.config/sauron/bno055_cal.json"
+                try:
+                    import json as _json
+
+                    with open(_CAL_FILE, "r") as _f:
+                        _cal_data = _json.load(_f)
+                    # JSON deserialises as list[int]; the BNO055 setter expects bytes
+                    imu_sensor.calibration = bytes(_cal_data)
+                    logger.info(
+                        "SensorReader: BNO055 calibration loaded from %s", _CAL_FILE
+                    )
+                except FileNotFoundError:
+                    logger.info(
+                        "SensorReader: no saved BNO055 calibration — starting fresh"
+                    )
+                except Exception as _cal_err:
+                    logger.warning(
+                        "SensorReader: failed to load BNO055 calibration from %s — %s",
+                        _CAL_FILE,
+                        _cal_err,
+                    )
+
                 imu_active = True
                 logger.info("SensorReader: BNO055 IMU initialised over I2C")
             except Exception as exc:
                 logger.warning(
-                    "SensorReader: IMU unavailable — will publish zero orientation. Reason: %s", exc
+                    "SensorReader: IMU unavailable — will publish zero orientation. Reason: %s",
+                    exc,
                 )
         else:
             logger.info("SensorReader: IMU disabled in config — skipping init")
 
         logger.info(
             "SensorReader: entering poll loop — gps_active=%s imu_active=%s poll_interval=%.3fs",
-            gps_active, imu_active, self._poll_interval,
+            gps_active,
+            imu_active,
+            self._poll_interval,
         )
 
         imu_read_count = 0
         gps_read_count = 0
         loop_count = 0
+        _imu_cal_saved = (
+            False  # save calibration once per session when fully calibrated
+        )
 
         while not self._stop_event.is_set():
             loop_count += 1
@@ -189,7 +258,9 @@ class SensorReader(threading.Thread):
             if imu_active and imu_sensor is not None:
                 try:
                     euler = imu_sensor.euler
-                    sys_cal, gyro_cal, accel_cal, mag_cal = imu_sensor.calibration_status
+                    sys_cal, gyro_cal, accel_cal, mag_cal = (
+                        imu_sensor.calibration_status
+                    )
                     cal_str = f"Sys:{sys_cal} G:{gyro_cal} A:{accel_cal} M:{mag_cal}"
 
                     with self._lock:
@@ -210,10 +281,39 @@ class SensorReader(threading.Thread):
                         cal_str,
                     )
 
+                    # --- Persist calibration when fully calibrated (once per session) ---
+                    if (
+                        not _imu_cal_saved
+                        and sys_cal == 3
+                        and gyro_cal == 3
+                        and accel_cal == 3
+                        and mag_cal == 3
+                    ):
+                        try:
+                            import json as _json
+                            import os as _os
+
+                            _CAL_FILE = "/root/.config/sauron/bno055_cal.json"
+                            _os.makedirs(_os.path.dirname(_CAL_FILE), exist_ok=True)
+                            with open(_CAL_FILE, "w") as _f:
+                                _json.dump(list(imu_sensor.calibration), _f)
+                            _imu_cal_saved = True
+                            logger.info(
+                                "SensorReader: BNO055 fully calibrated (3,3,3,3) — "
+                                "calibration saved to %s",
+                                _CAL_FILE,
+                            )
+                        except Exception as _save_err:
+                            logger.warning(
+                                "SensorReader: failed to save BNO055 calibration — %s",
+                                _save_err,
+                            )
+
                 except Exception as exc:
                     logger.debug(
                         "SensorReader [loop=%d]: IMU read error (transient) — %s",
-                        loop_count, exc,
+                        loop_count,
+                        exc,
                     )
 
             # ---- Read GPS ----
@@ -221,10 +321,14 @@ class SensorReader(threading.Thread):
                 try:
                     bytes_waiting = ser.in_waiting
                     if bytes_waiting > 0:
-                        raw_line = ser.readline().decode("utf-8", errors="ignore").strip()
+                        raw_line = (
+                            ser.readline().decode("utf-8", errors="ignore").strip()
+                        )
 
                         logger.debug(
-                            "SensorReader [loop=%d]: NMEA line — %s", loop_count, raw_line
+                            "SensorReader [loop=%d]: NMEA line — %s",
+                            loop_count,
+                            raw_line,
                         )
 
                         if raw_line.startswith("$GPGGA"):
@@ -253,18 +357,35 @@ class SensorReader(threading.Thread):
                                     )
                             except pynmea2.ParseError as exc:
                                 logger.debug(
-                                    "SensorReader [loop=%d]: NMEA parse error — %s", loop_count, exc
+                                    "SensorReader [loop=%d]: NMEA parse error — %s",
+                                    loop_count,
+                                    exc,
                                 )
                     else:
                         logger.debug(
-                            "SensorReader [loop=%d]: GPS serial — no bytes waiting", loop_count
+                            "SensorReader [loop=%d]: GPS serial — no bytes waiting",
+                            loop_count,
                         )
 
                 except Exception as exc:
                     logger.debug(
                         "SensorReader [loop=%d]: GPS read error (transient) — %s",
-                        loop_count, exc,
+                        loop_count,
+                        exc,
                     )
+
+            # ---- Apply overrides (always wins over sensor readings) ----
+            if self._gps_override or self._imu_override:
+                with self._lock:
+                    if self._gps_override:
+                        self._state.lat = self._gps_override_lat
+                        self._state.lon = self._gps_override_lon
+                        self._state.gps_locked = True
+                    if self._imu_override:
+                        self._state.heading = self._imu_override_heading
+                        self._state.pitch = self._imu_override_pitch
+                        self._state.roll = self._imu_override_roll
+                        self._state.imu_calibrated = True
 
             # Periodic info log so we know the thread is alive
             if loop_count % 200 == 0:
@@ -298,5 +419,7 @@ class SensorReader(threading.Thread):
 
         logger.info(
             "SensorReader: thread exited — total loops=%d imu_reads=%d gps_reads=%d",
-            loop_count, imu_read_count, gps_read_count,
+            loop_count,
+            imu_read_count,
+            gps_read_count,
         )

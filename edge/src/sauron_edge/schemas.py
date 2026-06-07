@@ -5,10 +5,11 @@ These are intentionally kept in sync with the server's ingestion/schemas.py.
 The server subscribes to devices/+/telemetry and validates against these types,
 so field names and types must not diverge.
 """
+
 from __future__ import annotations
 
 import time
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -53,6 +54,16 @@ class TelemetryPayload(BaseModel):
     timestamp: float
     """Unix epoch seconds (float) at the moment of assembly."""
 
+    fps: Optional[float] = None
+    """Actual camera FPS negotiated with V4L2."""
+
+    resolution_w: Optional[int] = None
+    resolution_h: Optional[int] = None
+    """Actual camera resolution negotiated with V4L2."""
+
+    cpu_temp_c: Optional[float] = None
+    """CPU/SoC temperature in Celsius, sampled every ~10 seconds."""
+
     @classmethod
     def build(
         cls,
@@ -64,6 +75,10 @@ class TelemetryPayload(BaseModel):
         roll: float,
         fov: float,
         ncoords: List[NCoord],
+        fps: Optional[float] = None,
+        resolution_w: Optional[int] = None,
+        resolution_h: Optional[int] = None,
+        cpu_temp_c: Optional[float] = None,
     ) -> "TelemetryPayload":
         """Convenience factory — assembles the full payload from flat sensor readings."""
         return cls(
@@ -74,4 +89,8 @@ class TelemetryPayload(BaseModel):
             ),
             ncoords=ncoords,
             timestamp=time.time(),
+            fps=fps,
+            resolution_w=resolution_w,
+            resolution_h=resolution_h,
+            cpu_temp_c=cpu_temp_c,
         )

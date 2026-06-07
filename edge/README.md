@@ -1,5 +1,9 @@
 # Sauron Edge
 
+```zsh
+uv run --extra deploy python scripts/deploy.py --version 1.0.0 --yes
+```
+
 AWS Greengrass v2 component that:
 1. Captures video from a Raspberry Pi camera (`raspi`) or RTSP stream (`rtsp`)
 2. Runs MOG2 background subtraction to find moving objects

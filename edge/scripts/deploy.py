@@ -285,6 +285,17 @@ def _build_recipe(cfg: Dict[str, str], artifact_uri: str) -> Dict[str, Any]:
         "ComponentConfiguration": {
             "DefaultConfiguration": {
                 "configFilePath": "~/.config/sauron/config.yaml",
+                "accessControl": {
+                    "aws.greengrass.ipc.mqttproxy": {
+                        f"{cfg['component_name']}:mqttproxy:1": {
+                            "policyDescription": (
+                                "Allow the edge component to publish telemetry to its device topic."
+                            ),
+                            "operations": ["aws.greengrass#PublishToIoTCore"],
+                            "resources": ["devices/*/telemetry"],
+                        }
+                    }
+                },
             }
         },
         "ComponentDependencies": {
@@ -332,17 +343,6 @@ def _build_recipe(cfg: Dict[str, str], artifact_uri: str) -> Dict[str, Any]:
                 ],
             }
         ],
-        "ComponentAccessControl": {
-            "aws.greengrass.ipc.mqttproxy": {
-                f"{cfg['component_name']}:mqttproxy:1": {
-                    "policyDescription": (
-                        "Allow the edge component to publish telemetry to its device topic."
-                    ),
-                    "operations": ["aws.greengrass#PublishToIoTCore"],
-                    "resources": ["*"],
-                }
-            }
-        },
     }
 
 

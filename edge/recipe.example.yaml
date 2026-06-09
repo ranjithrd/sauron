@@ -33,6 +33,7 @@ Manifests:
         Script: |
           set -e
           export PATH="$HOME/.local/bin:$PATH"
+          export CONFIGURATION_FILE_PATH={configuration:/configFilePath}
           cd {artifacts:decompressedPath}/sauron-edge
           uv run sauron-edge
     Artifacts:

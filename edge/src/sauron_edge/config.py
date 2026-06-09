@@ -36,13 +36,13 @@ class DetectionConfig(BaseModel):
     learning_rate: float = -1.0
     """MOG2 learning rate. -1 = automatic (recommended)."""
 
-    min_contour_area: float = 500.0
+    min_contour_area: float = 5000.0
     """Minimum foreground blob area in pixels². Smaller blobs are ignored."""
 
-    var_threshold: float = 16.0
+    var_threshold: float = 40.0
     """MOG2 varThreshold. Lower values = more sensitive to change."""
 
-    morph_kernel_size: int = 7
+    morph_kernel_size: int = 9
     """Size of the elliptical morphological kernel used for noise removal."""
 
     blur_kernel_size: int = 5
@@ -60,14 +60,14 @@ class DetectionConfig(BaseModel):
     Set to 1.0 to process at full resolution (higher memory pressure).
     """
 
-    min_stable_frames: int = 3
+    min_stable_frames: int = 5
     """
     Minimum number of consecutive frames a detection must appear in before it is
     forwarded to the publisher. Increases this to suppress flicker/noise; set to 1
     to disable stability filtering entirely.
     """
 
-    suppress_empty_publishes: bool = False
+    suppress_empty_publishes: bool = True
     """
     When True, skip the MQTT publish entirely on frames where the stability filter
     produces no confirmed detections. Reduces IoT Core message volume when the

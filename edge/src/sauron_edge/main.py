@@ -32,7 +32,7 @@ import time
 import cv2
 
 from sauron_edge.camera import make_camera
-from sauron_edge.config import get_configuration
+from sauron_edge.config import get_config_file_path, get_configuration
 from sauron_edge.dashboard import start_dashboard
 from sauron_edge.detection import DetectionResult, MOG2Detector
 from sauron_edge.publisher import GreengrassPublisher
@@ -66,6 +66,16 @@ def _configure_logging() -> None:
     for noisy in ("awscrt", "awsiot", "botocore", "urllib3"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
+    # Per-frame/per-message subsystems — suppress DEBUG spam; summaries in main loop
+    for chatty in (
+        "sauron_edge.sensors",
+        "sauron_edge.detection",
+        "sauron_edge.shared_state",
+        "sauron_edge.publisher",
+        "sauron_edge.dashboard",
+    ):
+        logging.getLogger(chatty).setLevel(logging.INFO)
+
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +102,14 @@ def main() -> None:  # noqa: C901
     # 1. Configuration
     # ------------------------------------------------------------------ #
     cfg = get_configuration()
+
+    try:
+        from pathlib import Path as _Path
+
+        _raw_yaml = _Path(get_config_file_path()).read_text(encoding="utf-8")
+        logger.info("config.yaml contents:\n%s", _raw_yaml)
+    except Exception as _e:
+        logger.warning("Could not read config.yaml for display: %s", _e)
 
     logger.info(
         "Configuration summary:\n"
@@ -140,6 +158,11 @@ def main() -> None:  # noqa: C901
     # ------------------------------------------------------------------ #
     logger.info("Building subsystems...")
 
+    logger.info(
+        "Creating camera: source=%s%s",
+        cfg.camera_source,
+        f" url={cfg.camera_rtsp_url}" if cfg.camera_source == "rtsp" else "",
+    )
     camera = make_camera(cfg)
 
     detector = MOG2Detector(
@@ -181,14 +204,8 @@ def main() -> None:  # noqa: C901
 
     # Camera — will raise immediately on device open failure
     logger.info("Starting camera (%s)...", cfg.camera_source)
-    try:
-        camera.start()
-        logger.info("Camera started successfully")
-    except Exception as exc:
-        logger.critical(
-            "Camera startup failed — cannot continue: %s", exc, exc_info=True
-        )
-        sys.exit(1)
+    camera.start()
+    logger.info("Camera started — connection happens in background thread")
 
     # Sensor reader — always starts; individual sensors are optional
     logger.info("Starting sensor reader thread...")
@@ -232,6 +249,16 @@ def main() -> None:  # noqa: C901
     _last_temp_poll: float = 0.0
     _TEMP_POLL_INTERVAL_S: float = 10.0
 
+    # Per-10s frame summary
+    _last_summary_mono: float = time.monotonic()
+    _summary_frames: int = 0
+    _summary_detections: int = 0
+    _SUMMARY_INTERVAL_S: float = 10.0
+
+    # Config auto-refresh every 1 s — fast enough to catch typo fixes while camera is down
+    _last_config_refresh_mono: float = time.monotonic()
+    _CONFIG_REFRESH_INTERVAL_S: float = 15.0
+
     # Camera hardware info (read once after start)
     _cam_fps: float = float(cfg.camera_fps)
     _cam_w: int = cfg.camera_width()
@@ -259,13 +286,74 @@ def main() -> None:  # noqa: C901
                 logger.error("Camera capture thread is no longer alive — shutting down")
                 break
 
+            # -- Config refresh (runs even when no frame is available) --
+            _now_mono = time.monotonic()
+            if _now_mono - _last_config_refresh_mono >= _CONFIG_REFRESH_INTERVAL_S:
+                _last_config_refresh_mono = _now_mono
+                try:
+                    new_cfg = get_configuration(refetch=True)
+                    publish_interval_s = 1.0 / new_cfg.publish_rate_hz
+
+                    camera_changed = (
+                        new_cfg.camera_source != cfg.camera_source
+                        or new_cfg.camera_rtsp_url != cfg.camera_rtsp_url
+                        or new_cfg.camera_dimensions != cfg.camera_dimensions
+                    )
+
+                    cfg = new_cfg
+
+                    # Apply detection params immediately — no restart needed
+                    detector.apply_config(
+                        learning_rate=cfg.detection.learning_rate,
+                        var_threshold=cfg.detection.var_threshold,
+                        min_contour_area=cfg.detection.min_contour_area,
+                        morph_kernel_size=cfg.detection.morph_kernel_size,
+                        process_scale=cfg.detection.process_scale,
+                        blur_kernel_size=cfg.detection.blur_kernel_size,
+                    )
+                    stabilizer.apply_config(
+                        min_stable_frames=cfg.detection.min_stable_frames,
+                    )
+
+                    if camera_changed:
+                        logger.info(
+                            "Config refresh: camera config changed → restarting camera "
+                            "(source=%s url=%s)",
+                            cfg.camera_source,
+                            cfg.camera_rtsp_url or "(none)",
+                        )
+                        camera.stop()
+                        camera = make_camera(cfg)
+                        try:
+                            camera.start()
+                            if hasattr(camera, "actual_fps"):
+                                _cam_fps = camera.actual_fps  # type: ignore[attr-defined]
+                                _cam_w = camera.actual_width  # type: ignore[attr-defined]
+                                _cam_h = camera.actual_height  # type: ignore[attr-defined]
+                            logger.info("Config refresh: camera restarted successfully")
+                        except Exception as _cam_err:
+                            logger.error(
+                                "Config refresh: camera restart failed — %s",
+                                _cam_err,
+                            )
+
+                    logger.info(
+                        "Config refreshed — camera_source=%s publish_rate=%.1fHz",
+                        cfg.camera_source,
+                        cfg.publish_rate_hz,
+                    )
+                except Exception as _cfg_err:
+                    logger.warning(
+                        "Config refresh failed — keeping previous config: %s", _cfg_err
+                    )
+
             # -- Read latest frame --
             frame = camera.read()
             if frame is None:
                 frame_skip_log_counter += 1
                 if frame_skip_log_counter % 50 == 1:
                     logger.info(
-                        "Waiting for first camera frame (attempt %d)...",
+                        "Waiting for camera frame (attempt %d)...",
                         frame_skip_log_counter,
                     )
                 time.sleep(0.01)
@@ -280,7 +368,7 @@ def main() -> None:  # noqa: C901
 
             total_frames_processed += 1
 
-            # -- Poll CPU temperature every 10 s --
+            # -- Periodic checks (temp, summary, config refresh) --
             _now_mono = time.monotonic()
             if _now_mono - _last_temp_poll >= _TEMP_POLL_INTERVAL_S:
                 _last_temp_poll = _now_mono
@@ -311,19 +399,37 @@ def main() -> None:  # noqa: C901
             # -- Apply temporal stability filter --
             stable_indices = stabilizer.update(result.ncoords)
             stable_ncoords = [result.ncoords[i] for i in stable_indices]
-            stable_bboxes = [result.bboxes[i] for i in stable_indices if i < len(result.bboxes)]
+            stable_bboxes = [
+                result.bboxes[i] for i in stable_indices if i < len(result.bboxes)
+            ]
 
             total_detections += len(stable_ncoords)
+            _summary_frames += 1
+            _summary_detections += len(stable_ncoords)
 
-            logger.debug(
-                "Frame #%d: raw_detections=%d stable=%d raw_contours=%d rejected_area=%d fg_pixels=%d",
-                total_frames_processed,
-                len(result.ncoords),
-                len(stable_ncoords),
-                result.n_raw_contours,
-                result.n_rejected_area,
-                result.foreground_pixel_count,
-            )
+            # -- 10-second frame summary --
+            if _now_mono - _last_summary_mono >= _SUMMARY_INTERVAL_S:
+                current_sensors_snap = sensor_reader.get_state()
+                logger.info(
+                    "Frame summary (last %.0fs): frames=%d detections=%d | "
+                    "GPS locked=%s lat=%.6f lon=%.6f | "
+                    "IMU heading=%.1f° pitch=%.1f° roll=%.1f° cal=%s | "
+                    "cpu_temp=%.1f°C",
+                    _now_mono - _last_summary_mono,
+                    _summary_frames,
+                    _summary_detections,
+                    current_sensors_snap.gps_locked,
+                    current_sensors_snap.lat,
+                    current_sensors_snap.lon,
+                    current_sensors_snap.heading,
+                    current_sensors_snap.pitch,
+                    current_sensors_snap.roll,
+                    current_sensors_snap.imu_calibration_status,
+                    _cpu_temp_c,
+                )
+                _last_summary_mono = _now_mono
+                _summary_frames = 0
+                _summary_detections = 0
 
             # -- Update shared state for dashboard (every frame) --
             ncoords_as_dicts = [nc.model_dump() for nc in stable_ncoords]
@@ -376,7 +482,7 @@ def main() -> None:  # noqa: C901
                         cpu_temp_c=round(_cpu_temp_c, 1) if _cpu_temp_c else None,
                     )
 
-                    logger.info(
+                    logger.debug(
                         "Telemetry publish #%d — "
                         "ncoords=%d (stable) raw=%d | "
                         "GPS locked=%s lat=%.6f lon=%.6f sats=%d | "

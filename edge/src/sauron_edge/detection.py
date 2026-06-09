@@ -107,6 +107,11 @@ class MOG2Detector:
         self._morph_buf2: Optional[np.ndarray] = None
         self._buf_shape: tuple = ()
 
+        # Store original (unscaled) values so apply_config can diff cleanly
+        self._var_threshold = var_threshold
+        self._raw_min_contour_area = min_contour_area
+        self._morph_kernel_size = morph_kernel_size
+
         # Frame counter — used to throttle periodic debug summaries.
         self._frame_count: int = 0
 
@@ -128,6 +133,79 @@ class MOG2Detector:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def apply_config(
+        self,
+        *,
+        learning_rate: float,
+        var_threshold: float,
+        min_contour_area: float,
+        morph_kernel_size: int,
+        process_scale: float,
+        blur_kernel_size: int,
+    ) -> None:
+        """Hot-reload detection parameters without restarting the service.
+
+        The MOG2 background model is preserved so the subtractor does not lose
+        its learned background.  Only var_threshold forces a subtractor rebuild
+        because it is a constructor parameter in OpenCV.
+        """
+        changes: list[str] = []
+
+        self._learning_rate = learning_rate
+
+        new_scale = max(0.1, min(1.0, process_scale))
+        if new_scale != self._process_scale:
+            changes.append(f"process_scale {self._process_scale:.2f}→{new_scale:.2f}")
+            self._process_scale = new_scale
+            # Invalidate morphology buffers so they are re-allocated on next frame
+            self._morph_buf1 = None
+            self._morph_buf2 = None
+            self._buf_shape = ()
+
+        new_scaled_area = min_contour_area * (self._process_scale**2)
+        if min_contour_area != self._raw_min_contour_area:
+            changes.append(
+                f"min_contour_area {self._raw_min_contour_area:.1f}→{min_contour_area:.1f}"
+            )
+            self._raw_min_contour_area = min_contour_area
+            self._min_contour_area = new_scaled_area
+
+        new_blur = blur_kernel_size if blur_kernel_size % 2 == 1 else blur_kernel_size + 1
+        if new_blur != self._blur_kernel_size:
+            changes.append(f"blur_kernel {self._blur_kernel_size}→{new_blur}px")
+            self._blur_kernel_size = new_blur
+
+        if morph_kernel_size != self._morph_kernel_size:
+            changes.append(f"morph_kernel {self._morph_kernel_size}→{morph_kernel_size}px")
+            self._morph_kernel_size = morph_kernel_size
+            self._open_kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (morph_kernel_size, morph_kernel_size)
+            )
+            self._close_kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (morph_kernel_size + 2, morph_kernel_size + 2)
+            )
+
+        if var_threshold != self._var_threshold:
+            changes.append(f"var_threshold {self._var_threshold:.1f}→{var_threshold:.1f}")
+            self._var_threshold = var_threshold
+            self._subtractor = cv2.createBackgroundSubtractorMOG2(
+                varThreshold=var_threshold,
+                detectShadows=False,
+            )
+            logger.info(
+                "MOG2Detector: var_threshold changed — subtractor rebuilt "
+                "(background model reset)"
+            )
+
+        if changes:
+            logger.info(
+                "MOG2Detector: config applied — %s | "
+                "model will use updated params immediately",
+                ", ".join(changes),
+            )
+        else:
+            logger.debug("MOG2Detector: apply_config called — no parameter changes detected")
 
     def process(self, frame: np.ndarray) -> DetectionResult:
         """

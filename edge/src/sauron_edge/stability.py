@@ -55,6 +55,23 @@ class DetectionStabilizer:
             self._min_stable,
         )
 
+    def apply_config(self, *, min_stable_frames: int) -> None:
+        """Hot-reload min_stable_frames without discarding the existing counts."""
+        new_val = max(1, min_stable_frames)
+        if new_val != self._min_stable:
+            logger.info(
+                "DetectionStabilizer: min_stable_frames %d→%d | "
+                "model will use updated threshold immediately",
+                self._min_stable,
+                new_val,
+            )
+            self._min_stable = new_val
+        else:
+            logger.debug(
+                "DetectionStabilizer: apply_config — no change (min_stable_frames=%d)",
+                self._min_stable,
+            )
+
     # ------------------------------------------------------------------
     # Public API — call once per processed frame
     # ------------------------------------------------------------------

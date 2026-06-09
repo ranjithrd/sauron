@@ -24,11 +24,14 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# How many consecutive failed reads before the capture thread gives up
-_MAX_CONSECUTIVE_FAILURES = 30
-
-# Seconds to sleep between failed read retries
+# Seconds to sleep between failed read retries (normal)
 _RETRY_SLEEP_S = 0.05
+
+# Seconds to sleep after an extended run of failures (avoids log spam)
+_RETRY_BACKOFF_S = 5.0
+
+# Number of consecutive failures before switching to backoff sleep
+_BACKOFF_THRESHOLD = 30
 
 
 # ---------------------------------------------------------------------------
@@ -135,23 +138,25 @@ class _CaptureThread(threading.Thread):
 
             else:
                 consecutive_failures += 1
-                logger.warning(
-                    "[%s] Frame read failed (consecutive=%d/%d)",
-                    self.name,
-                    consecutive_failures,
-                    _MAX_CONSECUTIVE_FAILURES,
-                )
                 self._healthy = False
 
-                if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-                    logger.error(
-                        "[%s] Camera unresponsive — capture thread exiting after %d failures",
+                if consecutive_failures <= _BACKOFF_THRESHOLD:
+                    logger.warning(
+                        "[%s] Frame read failed (consecutive=%d)",
                         self.name,
                         consecutive_failures,
                     )
-                    break
-
-                time.sleep(_RETRY_SLEEP_S)
+                    time.sleep(_RETRY_SLEEP_S)
+                else:
+                    # Log once when we first hit backoff, then stay quiet
+                    if consecutive_failures == _BACKOFF_THRESHOLD + 1:
+                        logger.warning(
+                            "[%s] Stream unresponsive after %d failures — retrying every %.0fs",
+                            self.name,
+                            consecutive_failures,
+                            _RETRY_BACKOFF_S,
+                        )
+                    time.sleep(_RETRY_BACKOFF_S)
 
         logger.info(
             "[%s] Capture thread stopped (healthy=%s)", self.name, self._healthy
@@ -275,54 +280,132 @@ class RaspiCamera(CameraSource):
 # ---------------------------------------------------------------------------
 
 
+class _RTSPCaptureThread(threading.Thread):
+    """
+    RTSP-specific capture thread that owns the connect/reconnect loop.
+    Never exits until stop() is called — if the stream is down it retries
+    every _RETRY_BACKOFF_S seconds, silently after the first failure log.
+    """
+
+    def __init__(self, url: str, width: int, height: int) -> None:
+        super().__init__(name="rtsp-capture", daemon=True)
+        self._url = url
+        self._width = width
+        self._height = height
+        self._frame: Optional[np.ndarray] = None
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._healthy = False
+
+    def get_frame(self) -> Optional[np.ndarray]:
+        with self._lock:
+            return self._frame.copy() if self._frame is not None else None
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def is_healthy(self) -> bool:
+        return self._healthy
+
+    def _open_cap(self) -> Optional[cv2.VideoCapture]:
+        """Try once to open the RTSP stream. Returns cap on success, None on failure."""
+        import os as _os
+        _os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+            "rtsp_transport;tcp"
+            "|fflags;nobuffer"
+            "|flags;low_delay"
+            "|framedrop;1"
+            "|buffer_size;65536"
+        )
+        cap = cv2.VideoCapture(self._url, cv2.CAP_FFMPEG)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+        if not cap.isOpened():
+            cap.release()
+            return None
+        return cap
+
+    def run(self) -> None:
+        logger.info("[rtsp-capture] Capture thread started — connecting to %s", self._url)
+        first_attempt = True
+
+        while not self._stop_event.is_set():
+            # --- connect ---
+            cap = self._open_cap()
+            if cap is None:
+                if first_attempt:
+                    logger.warning(
+                        "[rtsp-capture] Could not open stream %s — will retry every %.0fs",
+                        self._url,
+                        _RETRY_BACKOFF_S,
+                    )
+                    first_attempt = False
+                self._stop_event.wait(timeout=_RETRY_BACKOFF_S)
+                continue
+
+            first_attempt = True
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            logger.info(
+                "[rtsp-capture] Stream connected — %dx%d", actual_w, actual_h
+            )
+
+            # --- read loop ---
+            consecutive_failures = 0
+            while not self._stop_event.is_set():
+                grabbed, frame = cap.read()
+                if grabbed and frame is not None and frame.ndim >= 2 and frame.shape[0] > 1:
+                    with self._lock:
+                        self._frame = frame
+                    self._healthy = True
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    self._healthy = False
+                    if consecutive_failures <= _BACKOFF_THRESHOLD:
+                        logger.warning(
+                            "[rtsp-capture] Frame read failed (consecutive=%d)",
+                            consecutive_failures,
+                        )
+                        time.sleep(_RETRY_SLEEP_S)
+                    else:
+                        if consecutive_failures == _BACKOFF_THRESHOLD + 1:
+                            logger.warning(
+                                "[rtsp-capture] Stream lost after %d failures — reconnecting",
+                                consecutive_failures,
+                            )
+                        cap.release()
+                        break  # back to outer connect loop
+
+        logger.info("[rtsp-capture] Capture thread stopped")
+
+
 class RTSPCamera(CameraSource):
     """
-    RTSP stream camera, decoded via OpenCV's FFMPEG/GStreamer backend.
-    Used for test streams and remote cameras.
+    RTSP stream camera, decoded via OpenCV's FFMPEG backend.
+    start() returns immediately — connection and reconnection happen in the
+    background thread, which retries forever until stop() is called.
     """
 
     def __init__(self, url: str, width: int, height: int) -> None:
         self._url = url
         self._width = width
         self._height = height
-        self._cap: Optional[cv2.VideoCapture] = None
-        self._thread: Optional[_CaptureThread] = None
+        self._thread: Optional[_RTSPCaptureThread] = None
 
     def start(self) -> None:
-        logger.info("RTSPCamera: opening stream — %s", self._url)
-        self._cap = cv2.VideoCapture(self._url, cv2.CAP_FFMPEG)
-        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
-
-        if not self._cap.isOpened():
-            raise RuntimeError(
-                f"RTSPCamera: failed to open RTSP stream {self._url!r} — "
-                "check the URL and network connectivity"
-            )
-
-        actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        logger.info(
-            "RTSPCamera: stream opened — actual resolution=%dx%d", actual_w, actual_h
-        )
-
-        self._thread = _CaptureThread(
-            self._cap, thread_name="rtsp-capture", width=actual_w, height=actual_h
-        )
+        logger.info("RTSPCamera: launching capture thread for %s", self._url)
+        self._thread = _RTSPCaptureThread(self._url, self._width, self._height)
         self._thread.start()
-        logger.info("RTSPCamera: background capture thread launched")
 
     def stop(self) -> None:
         logger.info("RTSPCamera: stopping")
         if self._thread is not None:
             self._thread.stop()
-            self._thread.join(timeout=8.0)  # RTSP teardown can be slow
+            self._thread.join(timeout=8.0)
             if self._thread.is_alive():
                 logger.warning("RTSPCamera: capture thread did not exit cleanly")
-        if self._cap is not None:
-            self._cap.release()
-            logger.info("RTSPCamera: stream released")
 
     def read(self) -> Optional[np.ndarray]:
         if self._thread is None:

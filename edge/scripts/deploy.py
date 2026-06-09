@@ -330,6 +330,7 @@ def _build_recipe(cfg: Dict[str, str], artifact_uri: str) -> Dict[str, Any]:
                         "Script": textwrap.dedent(f"""\
                             set -e
                             export PATH="$HOME/.local/bin:$PATH"
+                            export CONFIGURATION_FILE_PATH={{configuration:/configFilePath}}
                             cd {{artifacts:decompressedPath}}/sauron-edge-{cfg['version']}
                             libcamerify uv run sauron-edge
                         """),
@@ -399,6 +400,13 @@ def step_create_deployment(
     components = {
         component_name: {
             "componentVersion": version,
+            "configurationUpdate": {
+                "merge": json.dumps(
+                    {
+                        "configFilePath": "/home/pi/.config/sauron/config.yaml",
+                    }
+                )
+            },
         }
     }
 

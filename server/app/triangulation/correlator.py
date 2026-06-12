@@ -37,9 +37,10 @@ class CorrelatedDetection:
     object_id: str
     lat: float
     lon: float
-    confidence: float           # [0, 1] quality of triangulation
-    timestamp: float            # UTC unix
-    source_cameras: List[str]   # device_ids of cameras used
+    altitude_m: float            # estimated altitude above ground
+    confidence: float            # [0, 1] quality of triangulation
+    timestamp: float             # UTC unix
+    source_cameras: List[str]    # device_ids of cameras used
 
 
 # ---------------------------------------------------------------------------
@@ -161,16 +162,6 @@ class Correlator:
             xnorm=d2.xnorm,
         )
 
-        if ray1 is None:
-            logger.debug(
-                "Correlator: ray rejected for %s — heading=%.1f° pitch=%.1f° roll=%.1f° xnorm=%.3f (ray points upward or misses ground)",
-                d1.device_id, d1.camera_heading, d1.camera_pitch, d1.camera_roll, d1.xnorm,
-            )
-        if ray2 is None:
-            logger.debug(
-                "Correlator: ray rejected for %s — heading=%.1f° pitch=%.1f° roll=%.1f° xnorm=%.3f (ray points upward or misses ground)",
-                d2.device_id, d2.camera_heading, d2.camera_pitch, d2.camera_roll, d2.xnorm,
-            )
         if ray1 is None or ray2 is None:
             return
 
@@ -202,10 +193,17 @@ class Correlator:
         # ── Accept: update last known position and emit ───────────────
         self._last_positions[d1.object_id] = (position.lat, position.lon)
 
+        logger.debug(
+            "Correlator: triangulated (%s, %s) → lat=%.6f lon=%.6f alt=%.1fm confidence=%.3f",
+            d1.device_id, d2.device_id,
+            position.lat, position.lon, position.altitude_m, position.confidence,
+        )
+
         correlated = CorrelatedDetection(
             object_id=d1.object_id,
             lat=position.lat,
             lon=position.lon,
+            altitude_m=position.altitude_m,
             confidence=position.confidence,
             timestamp=(d1.timestamp + d2.timestamp) / 2.0,
             source_cameras=[d1.device_id, d2.device_id],

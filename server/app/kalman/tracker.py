@@ -29,9 +29,10 @@ class SmoothedPosition:
     object_id: str
     lat: float
     lon: float
-    vel_lat: float            # velocity in lat direction (degrees/sec)
-    vel_lon: float            # velocity in lon direction (degrees/sec)
-    timestamp: float          # UTC unix
+    altitude_m: float          # estimated altitude above ground (metres)
+    vel_lat: float             # velocity in lat direction (degrees/sec)
+    vel_lon: float             # velocity in lon direction (degrees/sec)
+    timestamp: float           # UTC unix
     source_cameras: List[str]
 
 
@@ -94,6 +95,7 @@ class KalmanTracker:
             object_id=oid,
             lat=state.lat,
             lon=state.lon,
+            altitude_m=correlated.altitude_m,
             vel_lat=state.vel_lat,
             vel_lon=state.vel_lon,
             timestamp=correlated.timestamp,

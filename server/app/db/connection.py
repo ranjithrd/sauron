@@ -21,11 +21,16 @@ CREATE TABLE IF NOT EXISTS object_tracks (
     object_id       TEXT             NOT NULL,
     lat             DOUBLE PRECISION NOT NULL,
     lon             DOUBLE PRECISION NOT NULL,
+    altitude_m      DOUBLE PRECISION,
     vel_lat         DOUBLE PRECISION,
     vel_lon         DOUBLE PRECISION,
     source_cameras  TEXT[]
 );
 """
+
+_OBJECT_TRACKS_MIGRATIONS = [
+    "ALTER TABLE object_tracks ADD COLUMN IF NOT EXISTS altitude_m DOUBLE PRECISION",
+]
 
 _CREATE_OBJECT_TRACKS_IDX = """
 CREATE INDEX IF NOT EXISTS idx_object_tracks_object_id
@@ -68,6 +73,8 @@ async def init_db() -> None:
         await conn.execute(_CREATE_OBJECT_TRACKS)
         await conn.execute(_CREATE_OBJECT_TRACKS_IDX)
         await conn.execute(_CREATE_CAMERAS)
+        for statement in _OBJECT_TRACKS_MIGRATIONS:
+            await conn.execute(statement)
         for statement in _CAMERA_SCHEMA_MIGRATIONS:
             await conn.execute(statement)
         logger.info("DB: tables ensured")

@@ -21,13 +21,14 @@ async def write_track(position: SmoothedPosition) -> None:
         await conn.execute(
             """
             INSERT INTO object_tracks
-                (time, object_id, lat, lon, vel_lat, vel_lon, source_cameras)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (time, object_id, lat, lon, altitude_m, vel_lat, vel_lon, source_cameras)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             """,
             time_dt,
             position.object_id,
             position.lat,
             position.lon,
+            position.altitude_m,
             position.vel_lat,
             position.vel_lon,
             position.source_cameras,

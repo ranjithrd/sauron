@@ -1,9 +1,10 @@
 """
 triangulator.py — pure math, no I/O, no state.
 
-Build a 3D line-of-sight ray from camera heading/pitch/roll, project it onto
-the ground plane, then triangulate as the midpoint between two cameras' ground
-projections.
+Build a 3D line-of-sight ray from camera heading/pitch/roll and find the
+closest approach between two rays in 3D space (ENU coordinates).  Works for
+cameras that face upward into shared airspace as well as cameras that face
+downward toward the ground.
 """
 
 from __future__ import annotations
@@ -15,8 +16,6 @@ from typing import Optional
 from app.config import settings
 
 _METERS_PER_DEG_LAT: float = 111_320.0
-_UPWARD_EPS: float = 1e-9
-_HORIZON_FALLBACK_DZ: float = -1e-3
 _CONFIDENCE_DISTANCE_SCALE_M: float = 25.0
 
 
@@ -24,15 +23,18 @@ _CONFIDENCE_DISTANCE_SCALE_M: float = 25.0
 class CameraRay:
     lat: float
     lon: float
-    bearing_deg: float
-    ground_offset_m: tuple[float, float]   # (east_m, north_m)
+    height_m: float              # camera height above ground (metres)
+    dx: float                    # East component of unit direction vector
+    dy: float                    # North component
+    dz: float                    # Up component (positive = skyward)
 
 
 @dataclass(frozen=True)
 class TriangulatedPosition:
     lat: float
     lon: float
-    confidence: float    # [0, 1] — higher when two projected points agree
+    altitude_m: float            # estimated altitude of tracked object above ground
+    confidence: float            # [0, 1] — higher when rays converge tightly
 
 
 def compute_object_bearing(
@@ -40,7 +42,7 @@ def compute_object_bearing(
     fov_deg: float,
     xnorm: float,
 ) -> float:
-    """Return absolute compass bearing from camera heading + horizontal offset."""
+    """Return absolute compass bearing from camera heading + horizontal pixel offset."""
     x_offset_deg = (xnorm - 0.5) * fov_deg
     return (camera_heading_deg + x_offset_deg) % 360.0
 
@@ -54,45 +56,43 @@ def build_ray(
     camera_fov: float,
     xnorm: float,
 ) -> Optional[CameraRay]:
-    """Construct a pitch/roll-corrected camera ray projected to the ground plane."""
+    """
+    Construct a pitch/roll-corrected 3D ray from the camera into the scene.
+
+    The ray direction is expressed as a unit vector in ENU (East-North-Up)
+    space.  Upward-pointing rays are valid — this is an airspace tracker.
+    Returns None only if the direction vector degenerates (camera pointing
+    exactly at its own origin, which cannot happen physically).
+    """
     bearing = compute_object_bearing(camera_heading, camera_fov, xnorm)
     bearing_rad = math.radians(bearing)
 
-    # ENU direction from bearing (flat horizon reference).
-    dx = math.sin(bearing_rad)  # East
-    dy = math.cos(bearing_rad)  # North
+    # Horizontal ENU direction from bearing.
+    dx = math.sin(bearing_rad)   # East
+    dy = math.cos(bearing_rad)   # North
 
-    # Apply pitch around East-West axis.
+    # Pitch: rotate (dy, 0) toward Up around the lateral (East-West) axis.
     pitch_rad = math.radians(camera_pitch)
     dy_pitched = dy * math.cos(pitch_rad)
     dz_pitched = dy * math.sin(pitch_rad)
 
-    # Apply roll around North-South axis.
+    # Roll: rotate (dx, dz_pitched) around the forward (North-South) axis.
     roll_rad = math.radians(camera_roll)
-    dx_rolled = dx * math.cos(roll_rad) - dz_pitched * math.sin(roll_rad)
+    dx_final = dx * math.cos(roll_rad) - dz_pitched * math.sin(roll_rad)
     dz_final = dx * math.sin(roll_rad) + dz_pitched * math.cos(roll_rad)
     dy_final = dy_pitched
 
-    # Keep zero-pitch rays triangulatable by nudging exact-horizon rays slightly down.
-    if abs(dz_final) <= _UPWARD_EPS:
-        dz_final = _HORIZON_FALLBACK_DZ
-
-    # Upward rays do not hit the ground in front of camera.
-    if dz_final > 0.0:
+    mag = math.sqrt(dx_final ** 2 + dy_final ** 2 + dz_final ** 2)
+    if mag < 1e-9:
         return None
-
-    t = -settings.CAMERA_HEIGHT_M / dz_final
-    if t <= 0.0:
-        return None
-
-    east_m = t * dx_rolled
-    north_m = t * dy_final
 
     return CameraRay(
         lat=camera_lat,
         lon=camera_lon,
-        bearing_deg=bearing,
-        ground_offset_m=(east_m, north_m),
+        height_m=settings.CAMERA_HEIGHT_M,
+        dx=dx_final / mag,
+        dy=dy_final / mag,
+        dz=dz_final / mag,
     )
 
 
@@ -100,51 +100,82 @@ def intersect_rays(
     ray1: CameraRay,
     ray2: CameraRay,
 ) -> Optional[TriangulatedPosition]:
-    """Triangulate by midpoint between the two projected ground points."""
-    p1_lat, p1_lon = _ground_point_lat_lon(ray1)
-    p2_lat, p2_lon = _ground_point_lat_lon(ray2)
+    """
+    Find the closest approach between two 3D rays and return the midpoint.
 
-    ref_lat_rad = math.radians((p1_lat + p2_lat) / 2.0)
+    Uses the standard skew-lines formula.  Both rays must point forward
+    (t > 0) from their respective cameras.  Confidence is derived from the
+    separation distance at closest approach — tightly converging rays score
+    near 1.0; nearly parallel rays score near 0.
+    """
+    ref_lat_rad = math.radians(ray1.lat)
     meters_per_deg_lon = _METERS_PER_DEG_LAT * math.cos(ref_lat_rad)
     if abs(meters_per_deg_lon) < 1e-12:
         return None
 
-    x1 = p1_lon * meters_per_deg_lon
-    y1 = p1_lat * _METERS_PER_DEG_LAT
-    x2 = p2_lon * meters_per_deg_lon
-    y2 = p2_lat * _METERS_PER_DEG_LAT
+    # Express ray2 origin in ENU metres relative to ray1 origin.
+    east2 = (ray2.lon - ray1.lon) * meters_per_deg_lon
+    north2 = (ray2.lat - ray1.lat) * _METERS_PER_DEG_LAT
 
-    midpoint_x = (x1 + x2) / 2.0
-    midpoint_y = (y1 + y2) / 2.0
+    # Ray 1 origin (0, 0, h1); Ray 2 origin (east2, north2, h2).
+    p1 = (0.0, 0.0, ray1.height_m)
+    p2 = (east2, north2, ray2.height_m)
+    d1 = (ray1.dx, ray1.dy, ray1.dz)
+    d2 = (ray2.dx, ray2.dy, ray2.dz)
 
-    separation_m = math.hypot(x2 - x1, y2 - y1)
-    confidence = 1.0 / (1.0 + (separation_m / _CONFIDENCE_DISTANCE_SCALE_M))
+    w = (p1[0] - p2[0], p1[1] - p2[1], p1[2] - p2[2])
+
+    a = _dot(d1, d1)
+    b = _dot(d1, d2)
+    c = _dot(d2, d2)
+    d = _dot(d1, w)
+    e = _dot(d2, w)
+
+    denom = a * c - b * b
+    if abs(denom) < 1e-9:
+        # Rays are parallel — no unique intersection.
+        return None
+
+    t1 = (b * e - c * d) / denom
+    t2 = (a * e - b * d) / denom
+
+    # Object must be in front of both cameras.
+    if t1 < 0.0 or t2 < 0.0:
+        return None
+
+    # Closest point on each ray.
+    q1 = (p1[0] + t1 * d1[0], p1[1] + t1 * d1[1], p1[2] + t1 * d1[2])
+    q2 = (p2[0] + t2 * d2[0], p2[1] + t2 * d2[1], p2[2] + t2 * d2[2])
+
+    mid_east  = (q1[0] + q2[0]) / 2.0
+    mid_north = (q1[1] + q2[1]) / 2.0
+    mid_up    = (q1[2] + q2[2]) / 2.0
+
+    separation_m = math.sqrt(
+        (q1[0] - q2[0]) ** 2 + (q1[1] - q2[1]) ** 2 + (q1[2] - q2[2]) ** 2
+    )
+    confidence = 1.0 / (1.0 + separation_m / _CONFIDENCE_DISTANCE_SCALE_M)
     confidence = max(0.0, min(1.0, confidence))
 
+    lat = ray1.lat + mid_north / _METERS_PER_DEG_LAT
+    lon = ray1.lon + mid_east / meters_per_deg_lon
+
     return TriangulatedPosition(
-        lat=midpoint_y / _METERS_PER_DEG_LAT,
-        lon=midpoint_x / meters_per_deg_lon,
+        lat=lat,
+        lon=lon,
+        altitude_m=mid_up,
         confidence=confidence,
     )
 
 
-def _ground_point_lat_lon(ray: CameraRay) -> tuple[float, float]:
-    east_m, north_m = ray.ground_offset_m
-
-    lat = ray.lat + (north_m / _METERS_PER_DEG_LAT)
-
-    meters_per_deg_lon = _METERS_PER_DEG_LAT * math.cos(math.radians(ray.lat))
-    if abs(meters_per_deg_lon) < 1e-12:
-        return lat, ray.lon
-
-    lon = ray.lon + (east_m / meters_per_deg_lon)
-    return lat, lon
-
-
 def flat_earth_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Return approximate distance in metres between two lat/lon points."""
+    """Approximate distance in metres between two lat/lon points."""
     ref_lat_rad = math.radians((lat1 + lat2) / 2.0)
     meters_per_deg_lon = _METERS_PER_DEG_LAT * math.cos(ref_lat_rad)
     dlat = (lat2 - lat1) * _METERS_PER_DEG_LAT
     dlon = (lon2 - lon1) * meters_per_deg_lon
     return math.sqrt(dlat ** 2 + dlon ** 2)
+
+
+def _dot(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]

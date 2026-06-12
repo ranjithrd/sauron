@@ -3,7 +3,7 @@ name = "sauron-edge"
 version = "0.1.0"
 description = "Sauron surveillance edge component — runs as AWS Greengrass v2 component"
 readme = "README.md"
-requires-python = "~=3.11.2"
+requires-python = ">=3.11.0, <3.12"
 dependencies = [
     # Computer vision
     "opencv-python-headless>=4.6.0",

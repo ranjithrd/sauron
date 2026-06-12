@@ -313,16 +313,26 @@ def _build_recipe(cfg: Dict[str, str], artifact_uri: str) -> Dict[str, Any]:
                         "Script": textwrap.dedent(f"""\
                             set -e
                             
-                            # Install system-level C libraries required by PiWheels (NumPy/OpenCV)
+                            # Install system-level C libraries
                             apt-get update
                             apt-get install -y libopenblas-dev libatlas-base-dev
                             
-                            if ! command -v uv &>/dev/null; then
+                            # Use POSIX compliant redirect (>/dev/null 2>&1)
+                            if ! command -v uv >/dev/null 2>&1; then
                               curl -LsSf https://astral.sh/uv/install.sh | sh
-                              export PATH="$HOME/.local/bin:$PATH"
                             fi
+                            export PATH="$HOME/.local/bin:$PATH"
+                            
                             cd {{artifacts:decompressedPath}}/sauron-edge-{cfg['version']}
-                            uv sync --python 3.11.2 --extra-index-url https://www.piwheels.org/simple
+                            
+                            ARCH=$(uname -m)
+                            if [ "$ARCH" = "x86_64" ]; then
+                                echo "[*] Detected x86_64 (Ubuntu). Using standard PyPI..."
+                                uv sync --python 3.11
+                            else
+                                echo "[*] Detected ARM ($ARCH). Using PiWheels registry..."
+                                uv sync --python 3.11 --extra-index-url https://www.piwheels.org/simple
+                            fi
                         """),
                     },
                     "Run": {
@@ -332,7 +342,15 @@ def _build_recipe(cfg: Dict[str, str], artifact_uri: str) -> Dict[str, Any]:
                             export PATH="$HOME/.local/bin:$PATH"
                             export CONFIGURATION_FILE_PATH={{configuration:/configFilePath}}
                             cd {{artifacts:decompressedPath}}/sauron-edge-{cfg['version']}
-                            libcamerify uv run sauron-edge
+                            
+                            # Use POSIX compliant redirect to check for libcamerify
+                            if command -v libcamerify >/dev/null 2>&1; then
+                                echo "[*] libcamerify found. Wrapping execution..."
+                                libcamerify uv run sauron-edge
+                            else
+                                echo "[*] libcamerify not found. Running natively..."
+                                uv run sauron-edge
+                            fi
                         """),
                     },
                 },

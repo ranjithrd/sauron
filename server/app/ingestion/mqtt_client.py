@@ -255,6 +255,16 @@ class MQTTClient:
                 exc_info=exc,
             )
 
+        logger.debug(
+            "MQTTClient: received from %s — ncoords=%d ts=%.3f heading=%.1f° pitch=%.1f° roll=%.1f°",
+            device_id,
+            len(payload_model.ncoords),
+            payload_model.timestamp,
+            payload_model.cameras.imu.heading,
+            payload_model.cameras.imu.pitch,
+            payload_model.cameras.imu.roll,
+        )
+
         for coord in payload_model.ncoords:
             detection = Detection(
                 device_id=device_id,

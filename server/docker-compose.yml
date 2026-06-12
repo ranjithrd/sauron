@@ -25,6 +25,7 @@ services:
       - .:/app
     environment:
       DATABASE_URL: postgresql://iotel:iotel@db:5432/iotel
+      DETECTION_CORRELATION_WINDOW_MS: 1000
     ports:
       - "8000:8000"
     networks:

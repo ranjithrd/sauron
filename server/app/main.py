@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -7,6 +9,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
+
+_log_level = getattr(logging, os.environ.get("LOG_LEVEL", "DEBUG").upper(), logging.DEBUG)
+logging.basicConfig(
+    level=_log_level,
+    format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+# Keep noisy libraries quiet regardless of our level
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
 from app.db.connection import init_db
 from app.db.writer import write_track
 from app.ingestion.mqtt_client import MQTTClient

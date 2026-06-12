@@ -91,16 +91,37 @@ class Correlator:
         prune_cutoff = detection.timestamp - (5 * window_s)
 
         # ── 1. Search buffer for cross-camera candidates ──────────────
+        candidates_checked = 0
+        pairs_attempted = 0
         for candidate in self._buffer:
             # Must be from a different camera
             if candidate.device_id == detection.device_id:
                 continue
 
+            candidates_checked += 1
+            dt = abs(detection.timestamp - candidate.timestamp)
+
             # Must be within the time correlation window
-            if abs(detection.timestamp - candidate.timestamp) > window_s:
+            if dt > window_s:
+                logger.debug(
+                    "Correlator: skipping %s↔%s — dt=%.3fs > window=%.3fs",
+                    detection.device_id, candidate.device_id, dt, window_s,
+                )
                 continue
 
+            pairs_attempted += 1
             await self._try_correlate(detection, candidate)
+
+        if candidates_checked == 0 and len(self._buffer) > 0:
+            logger.debug(
+                "Correlator: %s — buffer has %d entry(s) but all from same device",
+                detection.device_id, len(self._buffer),
+            )
+        elif candidates_checked > 0 and pairs_attempted == 0:
+            logger.debug(
+                "Correlator: %s — %d cross-camera candidate(s) found but all outside %.0fms window",
+                detection.device_id, candidates_checked, settings.DETECTION_CORRELATION_WINDOW_MS,
+            )
 
         # ── 2. Append current detection ───────────────────────────────
         self._buffer.append(detection)
@@ -140,6 +161,16 @@ class Correlator:
             xnorm=d2.xnorm,
         )
 
+        if ray1 is None:
+            logger.debug(
+                "Correlator: ray rejected for %s — heading=%.1f° pitch=%.1f° roll=%.1f° xnorm=%.3f (ray points upward or misses ground)",
+                d1.device_id, d1.camera_heading, d1.camera_pitch, d1.camera_roll, d1.xnorm,
+            )
+        if ray2 is None:
+            logger.debug(
+                "Correlator: ray rejected for %s — heading=%.1f° pitch=%.1f° roll=%.1f° xnorm=%.3f (ray points upward or misses ground)",
+                d2.device_id, d2.camera_heading, d2.camera_pitch, d2.camera_roll, d2.xnorm,
+            )
         if ray1 is None or ray2 is None:
             return
 

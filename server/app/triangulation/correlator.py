@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional
 
 from app.config import settings
 from app.triangulation.triangulator import (
     CameraRay,
     build_ray,
-    flat_earth_distance_m,
     intersect_rays,
 )
 
@@ -77,24 +76,17 @@ class Correlator:
     on_rays : async callable, optional
         Called with the pair of :class:`RayRecord` objects for each accepted
         triangulation.  Use this to persist rays to the database.
-    max_position_jump_m : float
-        Maximum allowed distance (metres) between consecutive triangulated
-        positions for the same ``object_id``.  Larger jumps are silently
-        rejected as outliers.
     """
 
     def __init__(
         self,
         on_correlated: Callable[[CorrelatedDetection], Awaitable[None]],
         on_rays: Optional[Callable[[List[RayRecord]], Awaitable[None]]] = None,
-        max_position_jump_m: float = 500.0,
     ) -> None:
         self._on_correlated = on_correlated
         self._on_rays = on_rays
-        self.max_position_jump_m = max_position_jump_m
 
         self._buffer: List[Detection] = []
-        self._last_positions: Dict[str, Tuple[float, float]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -169,19 +161,9 @@ class Correlator:
         if position.confidence < _MIN_CONFIDENCE:
             logger.debug(
                 "Correlator: rejected pair (%s, %s) — low confidence %.3f",
-                d1.object_id, d2.object_id, position.confidence,
+                d1.device_id, d2.device_id, position.confidence,
             )
             return
-
-        pair_key = f"{d1.device_id}|{d2.device_id}"
-        if not self._position_jump_ok(pair_key, position.lat, position.lon):
-            logger.debug(
-                "Correlator: rejected pair (%s, %s) — position jump too large",
-                d1.device_id, d2.device_id,
-            )
-            return
-
-        self._last_positions[pair_key] = (position.lat, position.lon)
 
         logger.debug(
             "Correlator: triangulated (%s, %s) → lat=%.6f lon=%.6f alt=%.1fm conf=%.3f",
@@ -217,14 +199,6 @@ class Correlator:
             await self._on_correlated(correlated)
         except Exception as exc:  # pylint: disable=broad-except
             logger.error("Correlator: on_correlated callback raised: %s", exc, exc_info=exc)
-
-    def _position_jump_ok(self, object_id: str, new_lat: float, new_lon: float) -> bool:
-        if object_id not in self._last_positions:
-            return True
-        prev_lat, prev_lon = self._last_positions[object_id]
-        dist = flat_earth_distance_m(prev_lat, prev_lon, new_lat, new_lon)
-        return dist <= self.max_position_jump_m
-
 
 def _make_ray_record(
     timestamp: float,

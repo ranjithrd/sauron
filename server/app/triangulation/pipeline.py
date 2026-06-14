@@ -33,21 +33,17 @@ class TriangulationPipeline:
         An object implementing:
             ``await kalman_tracker.update(correlated: CorrelatedDetection)``
             ``kalman_tracker.prune_stale()``
-    max_position_jump_m : float
-        Forwarded to the :class:`Correlator`.
     """
 
     def __init__(
         self,
         kalman_tracker: Any,
         on_rays: Any = None,
-        max_position_jump_m: float = 50.0,
     ) -> None:
         self._kalman = kalman_tracker
         self._correlator = Correlator(
             on_correlated=self._on_correlated,
             on_rays=on_rays,
-            max_position_jump_m=max_position_jump_m,
         )
         self._prune_task: asyncio.Task | None = None  # type: ignore[type-arg]
 

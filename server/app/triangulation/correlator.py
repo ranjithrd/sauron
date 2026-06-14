@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_MIN_CONFIDENCE: float = 0.3
+_MIN_CONFIDENCE: float = 0.15
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +87,7 @@ class Correlator:
         self,
         on_correlated: Callable[[CorrelatedDetection], Awaitable[None]],
         on_rays: Optional[Callable[[List[RayRecord]], Awaitable[None]]] = None,
-        max_position_jump_m: float = 50.0,
+        max_position_jump_m: float = 500.0,
     ) -> None:
         self._on_correlated = on_correlated
         self._on_rays = on_rays
@@ -104,39 +104,38 @@ class Correlator:
         """
         Ingest a new detection, search for cross-camera matches, and emit
         CorrelatedDetection events for each valid pair found.
+
+        Only the most recent detection from each other device is considered —
+        taking all buffered candidates would produce M×N correlation explosions
+        when cameras publish multiple bounding boxes per frame.
         """
         window_s = settings.DETECTION_CORRELATION_WINDOW_MS / 1_000.0
         prune_cutoff = detection.timestamp - (5 * window_s)
 
-        candidates_checked = 0
-        pairs_attempted = 0
+        # Reduce buffer to the single most-recent entry per other device.
+        latest_by_device: Dict[str, Detection] = {}
         for candidate in self._buffer:
             if candidate.device_id == detection.device_id:
                 continue
+            prev = latest_by_device.get(candidate.device_id)
+            if prev is None or candidate.timestamp > prev.timestamp:
+                latest_by_device[candidate.device_id] = candidate
 
-            candidates_checked += 1
-            dt = abs(detection.timestamp - candidate.timestamp)
-
-            if dt > window_s:
-                logger.debug(
-                    "Correlator: skipping %s↔%s — dt=%.3fs > window=%.3fs",
-                    detection.device_id, candidate.device_id, dt, window_s,
-                )
-                continue
-
-            pairs_attempted += 1
-            await self._try_correlate(detection, candidate)
-
-        if candidates_checked == 0 and len(self._buffer) > 0:
+        if not latest_by_device and len(self._buffer) > 0:
             logger.debug(
                 "Correlator: %s — buffer has %d entry(s) but all from same device",
                 detection.device_id, len(self._buffer),
             )
-        elif candidates_checked > 0 and pairs_attempted == 0:
-            logger.debug(
-                "Correlator: %s — %d cross-camera candidate(s) found but all outside %.0fms window",
-                detection.device_id, candidates_checked, settings.DETECTION_CORRELATION_WINDOW_MS,
-            )
+
+        for other_id, candidate in latest_by_device.items():
+            dt = abs(detection.timestamp - candidate.timestamp)
+            if dt > window_s:
+                logger.debug(
+                    "Correlator: skipping %s↔%s — dt=%.3fs > window=%.3fs",
+                    detection.device_id, other_id, dt, window_s,
+                )
+                continue
+            await self._try_correlate(detection, candidate)
 
         self._buffer.append(detection)
         self._buffer = [d for d in self._buffer if d.timestamp >= prune_cutoff]
@@ -174,14 +173,15 @@ class Correlator:
             )
             return
 
-        if not self._position_jump_ok(d1.object_id, position.lat, position.lon):
+        pair_key = f"{d1.device_id}|{d2.device_id}"
+        if not self._position_jump_ok(pair_key, position.lat, position.lon):
             logger.debug(
                 "Correlator: rejected pair (%s, %s) — position jump too large",
-                d1.object_id, d2.object_id,
+                d1.device_id, d2.device_id,
             )
             return
 
-        self._last_positions[d1.object_id] = (position.lat, position.lon)
+        self._last_positions[pair_key] = (position.lat, position.lon)
 
         logger.debug(
             "Correlator: triangulated (%s, %s) → lat=%.6f lon=%.6f alt=%.1fm conf=%.3f",

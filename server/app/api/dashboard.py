@@ -11,7 +11,7 @@ from fastapi import APIRouter
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
-from app.db.queries import get_all_cameras, get_live_tracks
+from app.db.queries import get_all_cameras, get_live_rays, get_live_tracks
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
@@ -25,6 +25,13 @@ def _serialize(data: Any) -> Any:
 async def api_get_cameras() -> JSONResponse:
     """Return a list of all registered cameras."""
     data = await get_all_cameras()
+    return JSONResponse(content=_serialize(data))
+
+
+@router.get("/live_rays")
+async def api_get_live_rays(within_seconds: int = 2) -> JSONResponse:
+    """Return rays emitted within *within_seconds* for map overlay."""
+    data = await get_live_rays(within_seconds=within_seconds)
     return JSONResponse(content=_serialize(data))
 
 

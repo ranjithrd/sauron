@@ -49,6 +49,27 @@ CREATE TABLE IF NOT EXISTS cameras (
 );
 """
 
+_CREATE_DETECTION_RAYS = """
+CREATE TABLE IF NOT EXISTS detection_rays (
+    time        TIMESTAMPTZ      NOT NULL,
+    device_id   TEXT             NOT NULL,
+    camera_lat  DOUBLE PRECISION NOT NULL,
+    camera_lon  DOUBLE PRECISION NOT NULL,
+    dx          DOUBLE PRECISION NOT NULL,
+    dy          DOUBLE PRECISION NOT NULL,
+    dz          DOUBLE PRECISION NOT NULL,
+    xnorm       DOUBLE PRECISION NOT NULL,
+    object_id   TEXT,
+    tri_lat     DOUBLE PRECISION,
+    tri_lon     DOUBLE PRECISION,
+    tri_alt_m   DOUBLE PRECISION
+);
+"""
+
+_DETECTION_RAYS_MIGRATIONS = [
+    "ALTER TABLE detection_rays ADD COLUMN IF NOT EXISTS tri_alt_m DOUBLE PRECISION",
+]
+
 _CAMERA_SCHEMA_MIGRATIONS = [
     "ALTER TABLE cameras ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION",
     "ALTER TABLE cameras ADD COLUMN IF NOT EXISTS lon DOUBLE PRECISION",
@@ -73,6 +94,9 @@ async def init_db() -> None:
         await conn.execute(_CREATE_OBJECT_TRACKS)
         await conn.execute(_CREATE_OBJECT_TRACKS_IDX)
         await conn.execute(_CREATE_CAMERAS)
+        await conn.execute(_CREATE_DETECTION_RAYS)
+        for statement in _DETECTION_RAYS_MIGRATIONS:
+            await conn.execute(statement)
         for statement in _OBJECT_TRACKS_MIGRATIONS:
             await conn.execute(statement)
         for statement in _CAMERA_SCHEMA_MIGRATIONS:

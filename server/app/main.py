@@ -20,7 +20,7 @@ logging.basicConfig(
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("asyncio").setLevel(logging.WARNING)
 from app.db.connection import init_db
-from app.db.writer import write_track
+from app.db.writer import write_rays, write_track
 from app.ingestion.mqtt_client import MQTTClient
 from app.kalman.tracker import KalmanTracker
 from app.triangulation.pipeline import TriangulationPipeline
@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
 
     # ── Pipeline: MQTTClient → TriangulationPipeline → KalmanTracker → DB
     kalman_tracker = KalmanTracker(on_update=write_track)
-    pipeline = TriangulationPipeline(kalman_tracker=kalman_tracker)
+    pipeline = TriangulationPipeline(kalman_tracker=kalman_tracker, on_rays=write_rays)
     mqtt_client = MQTTClient()
     mqtt_client.on_detection(pipeline.handle_detection)
 

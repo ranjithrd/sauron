@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     IOT_CA_PATH: str = "certs/AmazonRootCA1.pem"
     IOT_CLIENT_ID: str = "iotel-server"
     CAMERA_HEIGHT_M: float = 2.0
+    ASSOCIATION_MAX_DIST_M: float = 50.0
 
     class Config:
         env_file = ".env"

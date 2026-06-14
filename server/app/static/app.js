@@ -23,8 +23,22 @@ let cameraMarkers  = {};   // device_id → L.Marker
 let fovPolygons    = {};   // device_id → L.Polygon
 let objectMarkers  = {};   // object_id → L.Marker
 let velocityLines  = {};   // object_id → L.Polyline
+let rayLines       = [];   // [L.Polyline] — rebuilt every poll
 let mapFitted      = false;
 let lastUpdateTime = null;
+
+// Stable colour per device (cycles through palette for any number of cameras)
+const RAY_PALETTE = ['#ff6600', '#aa44ff', '#00ccff', '#ffcc00', '#ff44aa'];
+const deviceColours = {};
+let deviceColourIdx = 0;
+
+function deviceColour(deviceId) {
+    if (!deviceColours[deviceId]) {
+        deviceColours[deviceId] = RAY_PALETTE[deviceColourIdx % RAY_PALETTE.length];
+        deviceColourIdx++;
+    }
+    return deviceColours[deviceId];
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -79,6 +93,50 @@ function buildFovPoints(lat, lon, bearingDeg, fovDeg, radiusM = 300) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Live rays
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function updateRays() {
+    let rays;
+    try {
+        const res = await fetch('/api/live_rays?within_seconds=2');
+        rays = await res.json();
+    } catch (e) {
+        return;
+    }
+
+    // Remove all previous ray lines
+    rayLines.forEach(l => map.removeLayer(l));
+    rayLines = [];
+
+    rays.forEach(r => {
+        if (!Number.isFinite(r.camera_lat) || !Number.isFinite(r.tri_lat)) return;
+
+        const colour = deviceColour(r.device_id);
+
+        // Line from camera to triangulated ground-projected point
+        const line = L.polyline(
+            [[r.camera_lat, r.camera_lon], [r.tri_lat, r.tri_lon]],
+            { color: colour, weight: 1.5, opacity: 0.55, dashArray: '4 3' }
+        ).addTo(map);
+
+        // Dot at the triangulated point
+        const dot = L.circleMarker([r.tri_lat, r.tri_lon], {
+            radius: 3,
+            color: colour,
+            fillColor: colour,
+            fillOpacity: 0.8,
+            weight: 1,
+        }).bindTooltip(
+            `${r.device_id}<br>${fmt(r.tri_lat, 5)}, ${fmt(r.tri_lon, 5)}<br>alt: ${r.tri_alt_m != null ? r.tri_alt_m.toFixed(1) + 'm' : '—'}`,
+            { sticky: true, className: 'ray-tooltip' }
+        ).addTo(map);
+
+        rayLines.push(line, dot);
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Cameras
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -100,7 +158,6 @@ async function loadCameras() {
         container.innerHTML = '<div class="empty-state">No cameras registered yet.</div>';
     }
 
-    // Auto-fit map on first load
     if (!mapFitted && valid.length > 0) {
         mapFitted = true;
         const lats = valid.map(c => c.lat);
@@ -111,7 +168,6 @@ async function loadCameras() {
         ]);
     }
 
-    // Update map markers + sidebar cards
     const seenIds = new Set();
     let html = '';
 
@@ -122,9 +178,10 @@ async function loadCameras() {
         const heading = Number.isFinite(cam.last_heading) ? cam.last_heading : 0;
         const pitch   = Number.isFinite(cam.last_pitch)   ? cam.last_pitch   : 0;
         const roll    = Number.isFinite(cam.last_roll)    ? cam.last_roll    : 0;
-        const fov     = 90;  // default; not stored in DB yet
+        const fov     = 90;
+        const colour  = deviceColour(cam.device_id);
 
-        const isValid = Number.isFinite(lat) && Number.isFinite(lon);
+        const isValid  = Number.isFinite(lat) && Number.isFinite(lon);
         const lastSeen = cam.last_seen;
         const seenAgo  = relTime(lastSeen);
         const isStale  = lastSeen
@@ -132,9 +189,15 @@ async function loadCameras() {
             : true;
 
         if (isValid) {
-            // Map marker
             if (!cameraMarkers[cam.device_id]) {
-                cameraMarkers[cam.device_id] = L.marker([lat, lon])
+                // Coloured camera icon matching its ray colour
+                const icon = L.divIcon({
+                    className: '',
+                    html: `<div style="width:10px;height:10px;border-radius:50%;background:${colour};border:2px solid #fff;box-shadow:0 0 6px ${colour}"></div>`,
+                    iconSize: [10, 10],
+                    iconAnchor: [5, 5],
+                });
+                cameraMarkers[cam.device_id] = L.marker([lat, lon], { icon })
                     .addTo(map)
                     .bindPopup(`<b>${cam.device_id}</b>`);
             } else {
@@ -148,20 +211,19 @@ async function loadCameras() {
                     `H: ${fmtDeg(heading)}  P: ${fmtDeg(pitch)}  R: ${fmtDeg(roll)}`
                 );
 
-            // FOV cone — update on every refresh
             if (fovPolygons[cam.device_id]) map.removeLayer(fovPolygons[cam.device_id]);
             fovPolygons[cam.device_id] = L.polygon(
                 buildFovPoints(lat, lon, heading, fov),
-                { color: '#ffaa00', fillColor: '#ffaa00', fillOpacity: 0.08, weight: 1, dashArray: '4 4' }
+                { color: colour, fillColor: colour, fillOpacity: 0.06, weight: 1, dashArray: '4 4' }
             ).addTo(map);
         }
 
-        // Sidebar card
         const dotClass = isStale ? 'dot stale' : 'dot';
+        const colourStyle = `style="background:${colour};box-shadow:0 0 4px ${colour}"`;
         html += `
         <div class="camera-card">
             <div class="camera-id">
-                <span class="${dotClass}"></span>
+                <span class="${dotClass}" ${isStale ? '' : colourStyle}></span>
                 ${cam.device_id}
             </div>
             <div class="camera-grid">
@@ -177,7 +239,6 @@ async function loadCameras() {
 
     if (data.length > 0) container.innerHTML = html;
 
-    // Remove stale map layers
     Object.keys(cameraMarkers).forEach(id => {
         if (!seenIds.has(id)) {
             map.removeLayer(cameraMarkers[id]);
@@ -221,8 +282,8 @@ async function updateTracks() {
     document.getElementById('footer-time').textContent =
         lastUpdateTime.toLocaleTimeString();
 
-    const container   = document.getElementById('tracks-container');
-    const trackCount  = document.getElementById('track-count');
+    const container  = document.getElementById('tracks-container');
+    const trackCount = document.getElementById('track-count');
     trackCount.textContent = tracks.length;
 
     const seenIds = new Set();
@@ -236,8 +297,8 @@ async function updateTracks() {
         const spdClass  = spd > 3 ? 'fast' : '';
         const sources   = Array.isArray(t.source_cameras) ? t.source_cameras.join(', ') : '—';
         const trackTime = t.time ? relTime(t.time) : '—';
+        const alt       = t.altitude_m != null ? t.altitude_m.toFixed(1) + 'm' : '—';
 
-        // Map marker
         if (!objectMarkers[t.object_id]) {
             const icon = L.divIcon({ className: 'object-marker', iconSize: [10, 10] });
             objectMarkers[t.object_id] = L.marker(pos, { icon })
@@ -253,15 +314,16 @@ async function updateTracks() {
         objectMarkers[t.object_id].getPopup().setContent(
             `<b>${t.object_id}</b><br>` +
             `${fmt(t.lat, 6)}, ${fmt(t.lon, 6)}<br>` +
+            `Alt: ${alt}<br>` +
             `Speed: ${spd} m/s<br>` +
             `Sources: ${sources}`
         );
 
-        // Sidebar card
         html += `
         <div class="track-card" onclick="map.setView([${t.lat},${t.lon}], 18)">
             <div class="track-id">${t.object_id}</div>
             <div class="track-pos">${fmt(t.lat, 6)}, ${fmt(t.lon, 6)}</div>
+            <div class="track-alt">Alt: ${alt}</div>
             <span class="speed-tag ${spdClass}">${spd} m/s</span>
             <div class="track-detail-grid">
                 <div class="kv"><span class="k">vel lat</span><span class="v">${fmt(t.vel_lat, 6)}</span></div>
@@ -272,7 +334,6 @@ async function updateTracks() {
         </div>`;
     });
 
-    // Prune stale map layers
     Object.keys(objectMarkers).forEach(id => {
         if (!seenIds.has(id)) {
             map.removeLayer(objectMarkers[id]);
@@ -292,7 +353,9 @@ async function updateTracks() {
 loadCameras();
 loadStats();
 updateTracks();
+updateRays();
 
 setInterval(updateTracks, 500);
+setInterval(updateRays,   500);
 setInterval(loadCameras, 5_000);
 setInterval(loadStats,   5_000);

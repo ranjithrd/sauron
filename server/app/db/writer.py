@@ -6,9 +6,13 @@ from __future__ import annotations
 
 import datetime
 import logging
+from typing import List, TYPE_CHECKING
 
 from app.db.connection import get_pool
 from app.kalman.tracker import SmoothedPosition
+
+if TYPE_CHECKING:
+    from app.triangulation.correlator import RayRecord
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,34 @@ async def write_track(position: SmoothedPosition) -> None:
             position.source_cameras,
         )
     logger.debug("DB: wrote track for %s", position.object_id)
+
+
+async def write_rays(rays: "List[RayRecord]") -> None:
+    """Insert ray records produced by a single triangulation event."""
+    if not rays:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO detection_rays
+                (time, device_id, camera_lat, camera_lon,
+                 dx, dy, dz, xnorm, object_id, tri_lat, tri_lon, tri_alt_m)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            """,
+            [
+                (
+                    datetime.datetime.fromtimestamp(r.timestamp, tz=datetime.timezone.utc),
+                    r.device_id,
+                    r.camera_lat, r.camera_lon,
+                    r.dx, r.dy, r.dz,
+                    r.xnorm,
+                    r.object_id,
+                    r.tri_lat, r.tri_lon, r.tri_alt_m,
+                )
+                for r in rays
+            ],
+        )
 
 
 async def upsert_camera(

@@ -70,6 +70,26 @@ async def get_playback(
     return [dict(r) for r in rows]
 
 
+async def get_live_rays(within_seconds: int = 2) -> list[dict]:
+    """Return all rays emitted within *within_seconds* (for map overlay)."""
+    pool = await get_pool()
+    interval = datetime.timedelta(seconds=within_seconds)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT device_id, camera_lat, camera_lon,
+                   dx, dy, dz, xnorm, object_id,
+                   tri_lat, tri_lon, tri_alt_m, time
+            FROM detection_rays
+            WHERE time > NOW() - $1::interval
+            ORDER BY time DESC
+            LIMIT 200
+            """,
+            interval,
+        )
+    return [dict(r) for r in rows]
+
+
 async def get_all_cameras() -> list[dict]:
     """Return all registered cameras."""
     pool = await get_pool()

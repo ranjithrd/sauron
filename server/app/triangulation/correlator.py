@@ -9,12 +9,12 @@ CorrelatedDetection events via a callback.
 from __future__ import annotations
 
 import logging
-import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.config import settings
 from app.triangulation.triangulator import (
+    CameraRay,
     build_ray,
     flat_earth_distance_m,
     intersect_rays,
@@ -29,18 +29,36 @@ _MIN_CONFIDENCE: float = 0.3
 
 
 # ---------------------------------------------------------------------------
-# Output dataclass consumed by the Kalman tracker
+# Output dataclasses
 # ---------------------------------------------------------------------------
+
+@dataclass
+class RayRecord:
+    """One camera ray from a successful triangulation pair."""
+    timestamp: float
+    device_id: str
+    camera_lat: float
+    camera_lon: float
+    dx: float
+    dy: float
+    dz: float
+    xnorm: float
+    object_id: str       # pre-association hint; stable ID assigned later by tracker
+    tri_lat: float
+    tri_lon: float
+    tri_alt_m: float
+
 
 @dataclass
 class CorrelatedDetection:
     object_id: str
     lat: float
     lon: float
-    altitude_m: float            # estimated altitude above ground
+    altitude_m: float            # estimated altitude of tracked object above ground
     confidence: float            # [0, 1] quality of triangulation
     timestamp: float             # UTC unix
     source_cameras: List[str]    # device_ids of cameras used
+    rays: List[RayRecord] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +74,9 @@ class Correlator:
     ----------
     on_correlated : async callable
         Called with each successfully triangulated :class:`CorrelatedDetection`.
+    on_rays : async callable, optional
+        Called with the pair of :class:`RayRecord` objects for each accepted
+        triangulation.  Use this to persist rays to the database.
     max_position_jump_m : float
         Maximum allowed distance (metres) between consecutive triangulated
         positions for the same ``object_id``.  Larger jumps are silently
@@ -65,15 +86,14 @@ class Correlator:
     def __init__(
         self,
         on_correlated: Callable[[CorrelatedDetection], Awaitable[None]],
+        on_rays: Optional[Callable[[List[RayRecord]], Awaitable[None]]] = None,
         max_position_jump_m: float = 50.0,
     ) -> None:
         self._on_correlated = on_correlated
+        self._on_rays = on_rays
         self.max_position_jump_m = max_position_jump_m
 
-        # Rolling buffer of recent detections
         self._buffer: List[Detection] = []
-
-        # Last emitted lat/lon per camera-scoped object_id
         self._last_positions: Dict[str, Tuple[float, float]] = {}
 
     # ------------------------------------------------------------------
@@ -84,25 +104,19 @@ class Correlator:
         """
         Ingest a new detection, search for cross-camera matches, and emit
         CorrelatedDetection events for each valid pair found.
-
-        The new detection is added to the buffer *after* searching so that
-        it cannot be matched against itself.
         """
         window_s = settings.DETECTION_CORRELATION_WINDOW_MS / 1_000.0
         prune_cutoff = detection.timestamp - (5 * window_s)
 
-        # ── 1. Search buffer for cross-camera candidates ──────────────
         candidates_checked = 0
         pairs_attempted = 0
         for candidate in self._buffer:
-            # Must be from a different camera
             if candidate.device_id == detection.device_id:
                 continue
 
             candidates_checked += 1
             dt = abs(detection.timestamp - candidate.timestamp)
 
-            # Must be within the time correlation window
             if dt > window_s:
                 logger.debug(
                     "Correlator: skipping %s↔%s — dt=%.3fs > window=%.3fs",
@@ -124,41 +138,24 @@ class Correlator:
                 detection.device_id, candidates_checked, settings.DETECTION_CORRELATION_WINDOW_MS,
             )
 
-        # ── 2. Append current detection ───────────────────────────────
         self._buffer.append(detection)
-
-        # ── 3. Prune old detections ───────────────────────────────────
         self._buffer = [d for d in self._buffer if d.timestamp >= prune_cutoff]
 
     # ------------------------------------------------------------------
     # Private
     # ------------------------------------------------------------------
 
-    async def _try_correlate(
-        self,
-        d1: Detection,
-        d2: Detection,
-    ) -> None:
-        """
-        Attempt to triangulate a pair of cross-camera detections.
-        Emits a callback on success; silently returns on rejection.
-        """
+    async def _try_correlate(self, d1: Detection, d2: Detection) -> None:
         ray1 = build_ray(
-            camera_lat=d1.camera_lat,
-            camera_lon=d1.camera_lon,
-            camera_heading=d1.camera_heading,
-            camera_pitch=d1.camera_pitch,
-            camera_roll=d1.camera_roll,
-            camera_fov=d1.camera_fov,
+            camera_lat=d1.camera_lat, camera_lon=d1.camera_lon,
+            camera_heading=d1.camera_heading, camera_pitch=d1.camera_pitch,
+            camera_roll=d1.camera_roll, camera_fov=d1.camera_fov,
             xnorm=d1.xnorm,
         )
         ray2 = build_ray(
-            camera_lat=d2.camera_lat,
-            camera_lon=d2.camera_lon,
-            camera_heading=d2.camera_heading,
-            camera_pitch=d2.camera_pitch,
-            camera_roll=d2.camera_roll,
-            camera_fov=d2.camera_fov,
+            camera_lat=d2.camera_lat, camera_lon=d2.camera_lon,
+            camera_heading=d2.camera_heading, camera_pitch=d2.camera_pitch,
+            camera_roll=d2.camera_roll, camera_fov=d2.camera_fov,
             xnorm=d2.xnorm,
         )
 
@@ -167,37 +164,37 @@ class Correlator:
 
         position = intersect_rays(ray1, ray2)
 
-        # ── Reject: no intersection or behind cameras ─────────────────
         if position is None:
             return
 
-        # ── Reject: low confidence (nearly parallel rays) ─────────────
         if position.confidence < _MIN_CONFIDENCE:
             logger.debug(
                 "Correlator: rejected pair (%s, %s) — low confidence %.3f",
-                d1.object_id,
-                d2.object_id,
-                position.confidence,
+                d1.object_id, d2.object_id, position.confidence,
             )
             return
 
-        # ── Reject: position jump too large ──────────────────────────
         if not self._position_jump_ok(d1.object_id, position.lat, position.lon):
             logger.debug(
                 "Correlator: rejected pair (%s, %s) — position jump too large",
-                d1.object_id,
-                d2.object_id,
+                d1.object_id, d2.object_id,
             )
             return
 
-        # ── Accept: update last known position and emit ───────────────
         self._last_positions[d1.object_id] = (position.lat, position.lon)
 
         logger.debug(
-            "Correlator: triangulated (%s, %s) → lat=%.6f lon=%.6f alt=%.1fm confidence=%.3f",
+            "Correlator: triangulated (%s, %s) → lat=%.6f lon=%.6f alt=%.1fm conf=%.3f",
             d1.device_id, d2.device_id,
             position.lat, position.lon, position.altitude_m, position.confidence,
         )
+
+        ts = (d1.timestamp + d2.timestamp) / 2.0
+
+        rays = [
+            _make_ray_record(ts, d1, ray1, d1.object_id, position.lat, position.lon, position.altitude_m),
+            _make_ray_record(ts, d2, ray2, d1.object_id, position.lat, position.lon, position.altitude_m),
+        ]
 
         correlated = CorrelatedDetection(
             object_id=d1.object_id,
@@ -205,28 +202,50 @@ class Correlator:
             lon=position.lon,
             altitude_m=position.altitude_m,
             confidence=position.confidence,
-            timestamp=(d1.timestamp + d2.timestamp) / 2.0,
+            timestamp=ts,
             source_cameras=[d1.device_id, d2.device_id],
+            rays=rays,
         )
+
+        if self._on_rays is not None:
+            try:
+                await self._on_rays(rays)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.error("Correlator: on_rays callback raised: %s", exc, exc_info=exc)
 
         try:
             await self._on_correlated(correlated)
         except Exception as exc:  # pylint: disable=broad-except
-            logger.error(
-                "Correlator: on_correlated callback raised: %s", exc, exc_info=exc
-            )
+            logger.error("Correlator: on_correlated callback raised: %s", exc, exc_info=exc)
 
-    def _position_jump_ok(
-        self, object_id: str, new_lat: float, new_lon: float
-    ) -> bool:
-        """
-        Return True if the new position is within ``max_position_jump_m`` of
-        the last known position for this object_id, or if no prior position
-        exists (first sighting).
-        """
+    def _position_jump_ok(self, object_id: str, new_lat: float, new_lon: float) -> bool:
         if object_id not in self._last_positions:
             return True
-
         prev_lat, prev_lon = self._last_positions[object_id]
         dist = flat_earth_distance_m(prev_lat, prev_lon, new_lat, new_lon)
         return dist <= self.max_position_jump_m
+
+
+def _make_ray_record(
+    timestamp: float,
+    detection: Detection,
+    ray: CameraRay,
+    object_id: str,
+    tri_lat: float,
+    tri_lon: float,
+    tri_alt_m: float,
+) -> RayRecord:
+    return RayRecord(
+        timestamp=timestamp,
+        device_id=detection.device_id,
+        camera_lat=ray.lat,
+        camera_lon=ray.lon,
+        dx=ray.dx,
+        dy=ray.dy,
+        dz=ray.dz,
+        xnorm=detection.xnorm,
+        object_id=object_id,
+        tri_lat=tri_lat,
+        tri_lon=tri_lon,
+        tri_alt_m=tri_alt_m,
+    )

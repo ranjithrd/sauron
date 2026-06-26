@@ -123,8 +123,11 @@ async function updateRays() {
     rays.forEach(r => {
         if (!Number.isFinite(r.camera_lat) || !Number.isFinite(r.dx) || !Number.isFinite(r.tri_lat)) return;
 
-        const rayKey = `${r.device_id}__${r.object_id}`;
-        const dotKey = `${r.tri_lat.toFixed(6)},${r.tri_lon.toFixed(6)}`;
+        // Key by device_id: one ray + one dot per camera, stable across polls.
+        // object_id in detection_rays is position-based and changes every frame,
+        // so using it as a key would cause flicker every 500 ms poll.
+        const rayKey = r.device_id;
+        const dotKey = r.device_id;
         seenRays.add(rayKey);
         seenDots.add(dotKey);
 
@@ -155,11 +158,14 @@ async function updateRays() {
                 fillOpacity: 1,
                 weight: 1.5,
             }).bindTooltip(
-                `${r.object_id}<br>${fmt(r.tri_lat, 5)}, ${fmt(r.tri_lon, 5)}${r.tri_alt_m != null ? '<br>alt: ' + r.tri_alt_m.toFixed(1) + 'm' : ''}`,
+                `${r.device_id}<br>${fmt(r.tri_lat, 5)}, ${fmt(r.tri_lon, 5)}${r.tri_alt_m != null ? '<br>alt: ' + r.tri_alt_m.toFixed(1) + 'm' : ''}`,
                 { sticky: true, className: 'ray-tooltip' }
             ).addTo(map);
         } else {
             dotLayers[dotKey].setLatLng([r.tri_lat, r.tri_lon]);
+            dotLayers[dotKey].setTooltipContent(
+                `${r.device_id}<br>${fmt(r.tri_lat, 5)}, ${fmt(r.tri_lon, 5)}${r.tri_alt_m != null ? '<br>alt: ' + r.tri_alt_m.toFixed(1) + 'm' : ''}`
+            );
         }
     });
 
@@ -180,9 +186,10 @@ async function refreshSnapshot(deviceId) {
         const res = await fetch(`/api/cameras/${encodeURIComponent(deviceId)}/snapshot`);
         if (!res.ok) return;
         const data = await res.json();
-        const wrap = document.getElementById(`snap-wrap-${CSS.escape(deviceId)}`);
-        const img  = document.getElementById(`snap-img-${CSS.escape(deviceId)}`);
-        const ts   = document.getElementById(`snap-ts-${CSS.escape(deviceId)}`);
+        const safeId = deviceId.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const wrap = document.getElementById(`snap-wrap-${safeId}`);
+        const img  = document.getElementById(`snap-img-${safeId}`);
+        const ts   = document.getElementById(`snap-ts-${safeId}`);
         if (!wrap || !img) return;
         img.src = data.url;
         wrap.classList.add('visible');
@@ -332,7 +339,7 @@ async function loadStats() {
 async function updateTracks() {
     let tracks;
     try {
-        const res = await fetch('/api/live_tracks?within_seconds=5');
+        const res = await fetch('/api/live_tracks?within_seconds=15');
         tracks = await res.json();
     } catch (e) {
         console.error('Track fetch failed:', e);
@@ -473,23 +480,52 @@ async function loadVLMStatus() {
         const chk = document.getElementById('vlm-toggle');
         if (chk) chk.checked = s.enabled;
 
-        const resultEl = document.getElementById('vlm-result');
-        const metaEl   = document.getElementById('vlm-meta');
+        const fieldsEl   = document.getElementById('vlm-fields');
+        const isDroneEl  = document.getElementById('vlm-is-drone');
+        const typeEl     = document.getElementById('vlm-drone-type');
+        const actionEl   = document.getElementById('vlm-action');
+        const metaEl     = document.getElementById('vlm-meta');
 
         if (s.last_result) {
-            resultEl.textContent = s.last_result;
-            resultEl.style.display = 'block';
+            let parsed = null;
+            try { parsed = JSON.parse(s.last_result); } catch (_) {}
+
+            if (parsed && typeof parsed === 'object') {
+                if (fieldsEl) fieldsEl.style.display = 'flex';
+
+                if (isDroneEl) {
+                    if (parsed.is_drone === true) {
+                        isDroneEl.textContent = 'YES';
+                        isDroneEl.className = 'vlm-field-val drone-yes';
+                    } else if (parsed.is_drone === false) {
+                        isDroneEl.textContent = 'NO';
+                        isDroneEl.className = 'vlm-field-val drone-no';
+                    } else {
+                        isDroneEl.textContent = 'uncertain';
+                        isDroneEl.className = 'vlm-field-val';
+                    }
+                }
+                if (typeEl)   typeEl.textContent   = parsed.drone_type || '—';
+                if (actionEl) actionEl.textContent  = parsed.action     || '—';
+            } else {
+                // Fallback: raw text (shouldn't happen with new analyzer)
+                if (fieldsEl)  fieldsEl.style.display = 'none';
+                if (actionEl)  actionEl.textContent   = s.last_result;
+            }
+
             if (metaEl) {
                 const ago = s.last_run ? relTime(new Date(s.last_run * 1000).toISOString()) : '—';
-                metaEl.textContent = `${s.model || ''} · ${ago}${s.last_device_id ? ' · ' + s.last_device_id : ''}`;
+                metaEl.textContent = `${s.model || ''} · ${ago}`;
             }
+
         } else if (s.last_error) {
-            resultEl.textContent = 'Error: ' + s.last_error;
-            resultEl.style.display = 'block';
-            if (metaEl) metaEl.textContent = '';
+            if (fieldsEl)  fieldsEl.style.display = 'none';
+            if (metaEl)    metaEl.textContent = 'Error: ' + s.last_error.slice(0, 120);
         } else {
-            resultEl.style.display = 'none';
-            if (metaEl) metaEl.textContent = s.enabled ? 'Waiting for snapshot…' : '';
+            if (fieldsEl)  fieldsEl.style.display = 'none';
+            if (metaEl)    metaEl.textContent = s.enabled
+                ? 'Waiting for snapshot from edge…'
+                : '';
         }
     } catch (_) {}
 }

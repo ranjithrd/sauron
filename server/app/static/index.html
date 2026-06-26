@@ -276,6 +276,39 @@
             border-bottom: 1px solid rgba(255,255,255,0.04);
         }
 
+        .vlm-fields {
+            margin-top: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .vlm-field {
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+        }
+
+        .vlm-field-key {
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #3a4458;
+            width: 52px;
+            flex-shrink: 0;
+            padding-top: 1px;
+        }
+
+        .vlm-field-val {
+            font-size: 0.72rem;
+            color: #7a8899;
+            word-break: break-word;
+            flex: 1;
+        }
+
+        .vlm-field-val.drone-yes { color: #e5534b; font-weight: 600; }
+        .vlm-field-val.drone-no  { color: #3fb950; }
+
         #vlm-result {
             font-size: 0.7rem;
             color: #7a8899;
@@ -428,7 +461,20 @@
                         <span class="toggle-track"></span>
                     </label>
                 </div>
-                <div id="vlm-result" style="display:none"></div>
+                <div class="vlm-fields" id="vlm-fields" style="display:none">
+                    <div class="vlm-field">
+                        <span class="vlm-field-key">Drone?</span>
+                        <span class="vlm-field-val" id="vlm-is-drone">—</span>
+                    </div>
+                    <div class="vlm-field">
+                        <span class="vlm-field-key">Type</span>
+                        <span class="vlm-field-val" id="vlm-drone-type">—</span>
+                    </div>
+                    <div class="vlm-field">
+                        <span class="vlm-field-key">Action</span>
+                        <span class="vlm-field-val" id="vlm-action">—</span>
+                    </div>
+                </div>
                 <div id="vlm-meta"></div>
             </div>
         </div>

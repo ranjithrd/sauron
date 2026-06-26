@@ -1,9 +1,9 @@
 """
-scheduler.py — background task that periodically runs VLM analysis.
+scheduler.py — background task that periodically runs VLM drone analysis.
 
-The scheduler is toggled on/off via the frontend.  When enabled, it picks
-the most recently uploaded snapshot from any camera and sends it to the VLM.
-Results are persisted to vlm_analyses and exposed via /api/vlm/status.
+When enabled via the frontend toggle, picks the most recent S3 snapshot,
+fetches the latest track velocity for context, and calls analyze_snapshot().
+Results are stored in vlm_analyses and served via /api/vlm/status.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ class VLMScheduler:
         }
 
     async def run(self) -> None:
-        """Infinite loop — checks enabled flag each interval."""
+        """Infinite loop — waits VLM_INTERVAL_S between analyses."""
         from app.config import settings
         from app.db.connection import get_pool
         from app.db.writer import write_vlm_result
@@ -57,7 +57,10 @@ class VLMScheduler:
                 continue
 
             if not settings.VLM_API_KEY:
-                logger.warning("VLMScheduler: VLM_API_KEY not set — skipping run")
+                logger.warning(
+                    "VLMScheduler: VLM_API_KEY not set — set OPENROUTER_API_KEY "
+                    "(or VLM_API_KEY) in .env and restart the server"
+                )
                 continue
 
             if not settings.AWS_S3_BUCKET:
@@ -82,23 +85,51 @@ class VLMScheduler:
                 continue
 
             if row is None or not row["s3_snapshot_key"]:
-                logger.debug("VLMScheduler: no snapshots available yet")
+                logger.warning(
+                    "VLMScheduler: no snapshots in DB yet — edge must have "
+                    "image_upload.enabled: true in config.yaml and active detections"
+                )
                 continue
 
             device_id = row["device_id"]
             s3_key = row["s3_snapshot_key"]
 
+            # Fetch latest track velocity for this run (any recent object)
+            vel_lat = 0.0
+            vel_lon = 0.0
+            altitude_m = None
             try:
-                result, duration_ms = await analyze_snapshot(
+                async with pool.acquire() as conn:
+                    track = await conn.fetchrow(
+                        """
+                        SELECT vel_lat, vel_lon, altitude_m
+                        FROM object_tracks
+                        WHERE time > NOW() - interval '30 seconds'
+                        ORDER BY time DESC
+                        LIMIT 1
+                        """
+                    )
+                if track:
+                    vel_lat = track["vel_lat"] or 0.0
+                    vel_lon = track["vel_lon"] or 0.0
+                    altitude_m = track["altitude_m"]
+            except Exception as exc:
+                logger.debug("VLMScheduler: could not fetch track velocity: %s", exc)
+
+            try:
+                result_str, duration_ms = await analyze_snapshot(
                     s3_key=s3_key,
                     device_id=device_id,
                     bucket=settings.AWS_S3_BUCKET,
                     region=settings.AWS_REGION,
                     model=settings.VLM_MODEL,
                     api_key=settings.VLM_API_KEY,
+                    vel_lat=vel_lat,
+                    vel_lon=vel_lon,
+                    altitude_m=altitude_m,
                 )
                 self._last_run_ts = time.time()
-                self._last_result = result
+                self._last_result = result_str
                 self._last_device_id = device_id
                 self._last_s3_key = s3_key
                 self._last_error = None
@@ -107,12 +138,12 @@ class VLMScheduler:
                     device_id=device_id,
                     s3_key=s3_key,
                     model=settings.VLM_MODEL,
-                    result=result,
+                    result=result_str,
                     error=None,
                     duration_ms=duration_ms,
                 )
 
-            except Exception as exc:  # pylint: disable=broad-except
+            except Exception as exc:
                 err = str(exc)
                 logger.error("VLMScheduler: analysis failed: %s", err)
                 self._last_run_ts = time.time()

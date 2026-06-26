@@ -22,10 +22,12 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: str = ""       # optional; falls back to instance profile / env
     AWS_SECRET_ACCESS_KEY: str = ""
 
-    # VLM inference (litellm — supports any provider)
-    VLM_MODEL: str = "gpt-4o"        # litellm model string, e.g. claude-3-5-sonnet-20241022
-    VLM_API_KEY: str = ""            # provider API key
-    VLM_INTERVAL_S: int = 30         # seconds between automatic VLM calls when enabled
+    # VLM inference via OpenRouter (litellm)
+    # Set VLM_API_KEY to your OpenRouter API key (sk-or-...)
+    # Override VLM_MODEL with any openrouter/<provider>/<model> string
+    VLM_MODEL: str = "openrouter/google/gemini-flash-1.5-8b"
+    VLM_API_KEY: str = ""
+    VLM_INTERVAL_S: int = 30
 
     class Config:
         env_file = ".env"

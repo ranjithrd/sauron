@@ -485,6 +485,7 @@ source = { editable = "." }
 dependencies = [
     { name = "adafruit-circuitpython-bno055" },
     { name = "awsiotsdk" },
+    { name = "boto3" },
     { name = "flask" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
@@ -506,6 +507,7 @@ deploy = [
 requires-dist = [
     { name = "adafruit-circuitpython-bno055", specifier = ">=5.4" },
     { name = "awsiotsdk", specifier = ">=1.21" },
+    { name = "boto3", specifier = ">=1.34" },
     { name = "boto3", marker = "extra == 'deploy'", specifier = ">=1.34" },
     { name = "click", marker = "extra == 'deploy'", specifier = ">=8.1" },
     { name = "flask", specifier = ">=3.0" },

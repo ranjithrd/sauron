@@ -80,19 +80,14 @@ class GreengrassPublisher:
         self._publish_count: int = 0
         self._failure_count: int = 0
 
-        # Reconnect backoff state — prevents hammering the nucleus with thread
-        # creation requests when IPC is unavailable (AWS_ERROR_THREAD_INSUFFICIENT_RESOURCE).
+        # Reconnect backoff state
         self._reconnect_backoff_s: float = _RECONNECT_BACKOFF_INITIAL_S
-        self._next_reconnect_at: float = (
-            0.0  # epoch seconds; 0 = may connect immediately
-        )
+        self._next_reconnect_at: float = 0.0
 
-        # Publish-level backoff — set when an UnauthorizedError is received so
-        # that we stop hammering the nucleus with doomed publish requests while
-        # the IPC socket itself remains open.
+        # Publish-level backoff — set when an UnauthorizedError is received
         self._publish_backoff_until: float = 0.0
 
-        # Telemetry toggle — can be flipped by the command listener thread
+        # Telemetry toggle — flipped by the command listener thread
         self.telemetry_enabled: bool = True
 
         self._cmd_thread: Optional[threading.Thread] = None
@@ -109,16 +104,6 @@ class GreengrassPublisher:
     # ------------------------------------------------------------------
 
     def connect(self) -> bool:
-        """
-        Establish (or re-establish) the Greengrass IPC connection.
-
-        Respects exponential backoff — returns False immediately (without
-        attempting a connection) if the backoff window has not elapsed.
-        This prevents hammering the nucleus with EventLoopGroup allocations
-        when resources are scarce (AWS_ERROR_THREAD_INSUFFICIENT_RESOURCE).
-
-        Returns True on success, False on failure or while backing off.
-        """
         if self._connected and self._client is not None:
             logger.debug("Publisher: already connected — skipping connect()")
             return True
@@ -140,7 +125,6 @@ class GreengrassPublisher:
 
             self._client = gg_ipc.connect()
             self._connected = True
-            # Reset backoff on successful connection
             self._reconnect_backoff_s = _RECONNECT_BACKOFF_INITIAL_S
             self._next_reconnect_at = 0.0
             logger.info("Publisher: Greengrass IPC connection established")
@@ -152,7 +136,6 @@ class GreengrassPublisher:
                 "Install it with: uv pip install awsiotsdk"
             )
             self._connected = False
-            # Don't backoff for import errors — it's a permanent config issue
             return False
 
         except Exception as exc:
@@ -164,7 +147,6 @@ class GreengrassPublisher:
             )
             self._client = None
             self._connected = False
-            # Advance backoff (exponential, capped)
             self._next_reconnect_at = time.monotonic() + self._reconnect_backoff_s
             self._reconnect_backoff_s = min(
                 self._reconnect_backoff_s * 2.0, _RECONNECT_BACKOFF_MAX_S
@@ -188,20 +170,6 @@ class GreengrassPublisher:
     # ------------------------------------------------------------------
 
     def publish(self, payload: dict) -> bool:
-        """
-        Serialise `payload` as JSON and publish it to the telemetry topic
-        via Greengrass IPC.
-
-        Automatically attempts to reconnect if not currently connected.
-
-        Args:
-            payload: Dict that will be JSON-serialised.  Must be compatible
-                     with json.dumps().
-
-        Returns:
-            True if the publish succeeded, False otherwise.
-        """
-        # If a previous UnauthorizedError put us in a publish backoff, honour it.
         now = time.monotonic()
         if now < self._publish_backoff_until:
             remaining = self._publish_backoff_until - now
@@ -211,7 +179,6 @@ class GreengrassPublisher:
             )
             return False
 
-        # Ensure we have a live connection
         if not self._connected:
             logger.info(
                 "Publisher: not connected — attempting reconnect before publish"
@@ -267,25 +234,15 @@ class GreengrassPublisher:
             return True
 
         except UnauthorizedError:
-            # Authorization is enforced by the Greengrass nucleus IPC policy
-            # (ComponentAccessControl in the recipe) and the IoT Core thing
-            # policy (iot:Publish on the topic ARN).  Reconnecting will not
-            # fix this — back off and log a clear action item instead.
             self._failure_count += 1
             logger.error(
                 "Publisher: UnauthorizedError publishing to %s (total_failures=%d). "
-                "This will not resolve itself automatically. "
-                "Check: (1) ComponentAccessControl in the Greengrass recipe grants "
-                "aws.greengrass#PublishToIoTCore on 'devices/*/telemetry', "
-                "(2) the Greengrass thing's IoT Core policy allows iot:Publish on "
-                "arn:aws:iot:REGION:ACCOUNT:topic/devices/*/telemetry. "
+                "Check ComponentAccessControl in the Greengrass recipe. "
                 "Suppressing publish attempts for %.0f s.",
                 self._topic,
                 self._failure_count,
                 _RECONNECT_BACKOFF_MAX_S,
             )
-            # Do NOT mark connection dirty — the IPC socket itself is fine.
-            # Gate all further publish calls until the backoff window passes.
             self._publish_backoff_until = time.monotonic() + _RECONNECT_BACKOFF_MAX_S
             return False
 
@@ -298,12 +255,11 @@ class GreengrassPublisher:
                 exc,
                 exc_info=True,
             )
-            # Mark connection dirty — will reconnect on next publish()
             self._connected = False
             return False
 
     # ------------------------------------------------------------------
-    # Command listener (telemetry toggle)
+    # Command listener (telemetry toggle via IoT Core MQTT)
     # ------------------------------------------------------------------
 
     def start_command_listener(self) -> None:
@@ -325,44 +281,85 @@ class GreengrassPublisher:
             self._cmd_thread.join(timeout=3.0)
 
     def _command_listener_loop(self) -> None:
+        """
+        Subscribes to _COMMANDS_TOPIC using a Greengrass IPC stream handler.
+
+        The key fix vs. the old implementation: Greengrass IPC subscriptions are
+        streaming operations. Calling operation.get_response() only gets the
+        initial subscription-confirmed acknowledgement; it does NOT yield subsequent
+        messages. Incoming messages are delivered via the StreamHandler's
+        on_stream_event() callback. The old loop calling get_response() repeatedly
+        was therefore silently doing nothing.
+        """
         while not self._cmd_stop.is_set():
             try:
                 import awsiot.greengrasscoreipc as gg_ipc  # type: ignore[import]
+                from awsiot.greengrasscoreipc.client import (  # type: ignore[import]
+                    SubscribeToIoTCoreStreamHandler,
+                )
                 from awsiot.greengrasscoreipc.model import (  # type: ignore[import]
                     QOS,
                     SubscribeToIoTCoreRequest,
                 )
 
+                publisher_ref = self  # captured in handler closure
+
+                class _Handler(SubscribeToIoTCoreStreamHandler):
+                    def on_stream_event(self, event) -> None:  # type: ignore[override]
+                        try:
+                            raw = event.message.payload
+                            if raw is None:
+                                return
+                            msg = json.loads(raw.decode("utf-8"))
+                            if msg.get("action") == "set_telemetry":
+                                enabled = bool(msg.get("enabled", True))
+                                publisher_ref.telemetry_enabled = enabled
+                                logger.info(
+                                    "Publisher: telemetry %s via IoT command",
+                                    "ENABLED" if enabled else "DISABLED",
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "Publisher: malformed command message: %s", exc
+                            )
+
+                    def on_stream_error(self, error: Exception) -> bool:  # type: ignore[override]
+                        logger.warning(
+                            "Publisher: command stream error — %s", error
+                        )
+                        return True  # returning True closes the stream
+
+                    def on_stream_closed(self) -> None:  # type: ignore[override]
+                        logger.info("Publisher: command stream closed")
+
                 client = gg_ipc.connect()
+                handler = _Handler()
                 request = SubscribeToIoTCoreRequest(
                     topic_name=_COMMANDS_TOPIC,
                     qos=QOS.AT_LEAST_ONCE,
                 )
-                operation = client.new_subscribe_to_iot_core()
+                operation = client.new_subscribe_to_iot_core(handler)
                 operation.activate(request)
+                # Wait for subscription confirmation (one-time, not the message stream)
+                operation.get_response().result(timeout=10.0)
+                logger.info(
+                    "Publisher: subscribed to %s — telemetry toggle ready",
+                    _COMMANDS_TOPIC,
+                )
 
+                # Keep this thread alive; the handler receives events asynchronously.
                 while not self._cmd_stop.is_set():
-                    event = operation.get_response().result(timeout=5.0)
-                    if event and event.message and event.message.payload:
-                        try:
-                            msg = json.loads(event.message.payload.decode("utf-8"))
-                            if msg.get("action") == "set_telemetry":
-                                enabled = bool(msg.get("enabled", True))
-                                self.telemetry_enabled = enabled
-                                logger.info(
-                                    "Publisher: telemetry %s via command",
-                                    "ENABLED" if enabled else "DISABLED",
-                                )
-                        except (json.JSONDecodeError, AttributeError) as exc:
-                            logger.warning("Publisher: malformed command message: %s", exc)
+                    self._cmd_stop.wait(timeout=5.0)
 
             except ImportError:
-                logger.warning("Publisher: awsiotsdk not available — command listener disabled")
+                logger.warning(
+                    "Publisher: awsiotsdk not available — command listener disabled"
+                )
                 break
             except Exception as exc:
                 if not self._cmd_stop.is_set():
                     logger.warning(
-                        "Publisher: command listener error — %s. Retrying in 10s.", exc
+                        "Publisher: command listener error — %s. Retrying in 10 s.", exc
                     )
                     self._cmd_stop.wait(timeout=10.0)
 

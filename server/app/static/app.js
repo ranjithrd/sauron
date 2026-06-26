@@ -545,4 +545,4 @@ setInterval(updateTracks,  500);
 setInterval(updateRays,    500);
 setInterval(loadCameras,  5_000);
 setInterval(loadStats,    5_000);
-setInterval(loadVLMStatus, 5_000);
+setInterval(loadVLMStatus, 60_000);

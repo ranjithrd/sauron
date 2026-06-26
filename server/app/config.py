@@ -18,16 +18,16 @@ class Settings(BaseSettings):
 
     # S3 snapshot storage
     AWS_S3_BUCKET: str = ""
-    AWS_REGION: str = "us-east-1"
+    AWS_REGION: str = "ap-south-1"
     AWS_ACCESS_KEY_ID: str = ""       # optional; falls back to instance profile / env
     AWS_SECRET_ACCESS_KEY: str = ""
 
     # VLM inference via OpenRouter (litellm)
     # Set VLM_API_KEY to your OpenRouter API key (sk-or-...)
     # Override VLM_MODEL with any openrouter/<provider>/<model> string
-    VLM_MODEL: str = "openrouter/google/gemini-flash-1.5-8b"
+    VLM_MODEL: str = "openrouter/google/gemini-2.0-flash-lite"
     VLM_API_KEY: str = ""
-    VLM_INTERVAL_S: int = 30
+    VLM_INTERVAL_S: int = 60
 
     class Config:
         env_file = ".env"

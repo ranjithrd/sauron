@@ -50,7 +50,7 @@ class VLMScheduler:
         from app.vlm.analyzer import analyze_snapshot
 
         while True:
-            interval = max(5, settings.VLM_INTERVAL_S)
+            interval = max(60, settings.VLM_INTERVAL_S)
             await asyncio.sleep(interval)
 
             if not self.enabled:

@@ -9,13 +9,20 @@
 # ─────────────────────────────────────
 # Camera
 # ─────────────────────────────────────
-# 'raspi' opens /dev/video0 via V4L2 (Raspberry Pi embedded camera).
-# 'rtsp'  opens a network stream via FFMPEG; set camera_rtsp_url below.
+# 'raspi'    opens /dev/video0 via V4L2 (Raspberry Pi embedded camera).
+# 'rtsp'     opens a network stream via FFMPEG; set camera_rtsp_url below.
+# 'ntp_loop' plays a local video file in a loop synchronised to NTP wall-clock time.
+#            All edge agents playing the same file will always be on the same frame.
+#            Works best when video duration divides 60s (e.g. 5s, 10s, 15s, 30s, 60s).
 camera_source: raspi
 
-# Required when camera_source is 'rtsp'. Ignored for 'raspi'.
+# Required when camera_source is 'rtsp'. Ignored otherwise.
 # Example: rtsp://admin:password@192.168.1.100:554/stream1
 camera_rtsp_url: ""
+
+# Required when camera_source is 'ntp_loop'. Absolute path to video file.
+# Example: /home/pi/test-footage/10s-scene.mp4
+camera_ntp_loop_file: ""
 
 # Desired capture resolution as "WIDTHxHEIGHT". The actual resolution
 # may differ depending on what the device supports.
@@ -80,6 +87,23 @@ detection:
   # Reduces IoT Core message volume when the scene is quiet.
   # Heartbeat messages are lost when enabled — disable if you need constant heartbeats.
   suppress_empty_publishes: false
+
+# ─────────────────────────────────────
+# Image upload (S3 snapshots)
+# ─────────────────────────────────────
+# When enabled, the edge uploads a JPEG snapshot to S3 whenever objects are
+# detected and at least min_interval_s seconds have elapsed since the last
+# upload.  The S3 key is embedded in the telemetry payload so the server can
+# generate pre-signed URLs for the frontend.
+#
+# IAM credentials come from the Greengrass component's execution role —
+# no explicit key/secret required on the device.
+image_upload:
+  enabled: false
+  min_interval_s: 5.0    # upload at most once every 5 seconds
+  s3_bucket: ""          # leave empty to use AWS_S3_BUCKET env var
+  s3_prefix: snapshots
+  jpeg_quality: 75
 
 # ─────────────────────────────────────
 # Hardware sensors

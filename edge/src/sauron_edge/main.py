@@ -28,6 +28,7 @@ import signal
 import subprocess
 import sys
 import time
+from typing import Optional
 
 import cv2
 
@@ -35,6 +36,7 @@ from sauron_edge.camera import make_camera
 from sauron_edge.config import get_config_file_path, get_configuration
 from sauron_edge.dashboard import start_dashboard
 from sauron_edge.detection import DetectionResult, MOG2Detector
+from sauron_edge.image_uploader import ImageUploader
 from sauron_edge.publisher import GreengrassPublisher
 from sauron_edge.schemas import TelemetryPayload
 from sauron_edge.sensors import SensorReader
@@ -198,6 +200,26 @@ def main() -> None:  # noqa: C901
 
     publisher = GreengrassPublisher()
 
+    # Image uploader — optional, only active when image_upload.enabled is true
+    import os as _os
+    _img_bucket = cfg.image_upload.s3_bucket or _os.environ.get("AWS_S3_BUCKET", "")
+    image_uploader: Optional[ImageUploader] = None
+    if cfg.image_upload.enabled:
+        image_uploader = ImageUploader(
+            bucket=_img_bucket,
+            prefix=cfg.image_upload.s3_prefix,
+            min_interval_s=cfg.image_upload.min_interval_s,
+            jpeg_quality=cfg.image_upload.jpeg_quality,
+        )
+        logger.info(
+            "ImageUploader: enabled — bucket=%s prefix=%s interval=%.1fs",
+            _img_bucket or "(not set)",
+            cfg.image_upload.s3_prefix,
+            cfg.image_upload.min_interval_s,
+        )
+    else:
+        logger.info("ImageUploader: disabled (image_upload.enabled=false)")
+
     # ------------------------------------------------------------------ #
     # 4. Start subsystems
     # ------------------------------------------------------------------ #
@@ -223,6 +245,9 @@ def main() -> None:  # noqa: C901
             "Greengrass IPC connection failed at startup — will retry on first publish. "
             "If running outside Greengrass, this is expected."
         )
+
+    # Start command listener for telemetry toggle (non-fatal if Greengrass unavailable)
+    publisher.start_command_listener()
 
     # ------------------------------------------------------------------ #
     # 4b. Start monitoring dashboard
@@ -454,13 +479,26 @@ def main() -> None:  # noqa: C901
                 cpu_temp_c=_cpu_temp_c,
             )
 
+            # -- Upload snapshot if enabled --
+            snapshot_s3_key: Optional[str] = None
+            if image_uploader is not None:
+                snapshot_s3_key = image_uploader.maybe_upload(
+                    frame=frame,
+                    device_id=publisher.device_id,
+                    has_detections=bool(stable_ncoords),
+                )
+
             # -- Publish at configured rate --
             now = time.monotonic()
             time_since_last_publish = now - last_publish_monotonic
 
             if time_since_last_publish >= publish_interval_s:
+                # Check global telemetry toggle (set via server command)
+                if not publisher.telemetry_enabled:
+                    logger.debug("Publish suppressed — telemetry disabled via command")
+                    last_publish_monotonic = now
                 # Optionally suppress MQTT message when nothing stable is detected
-                if cfg.detection.suppress_empty_publishes and not stable_ncoords:
+                elif cfg.detection.suppress_empty_publishes and not stable_ncoords:
                     logger.debug(
                         "Publish suppressed — no stable detections (suppress_empty_publishes=True)"
                     )
@@ -480,6 +518,7 @@ def main() -> None:  # noqa: C901
                         resolution_w=_cam_w,
                         resolution_h=_cam_h,
                         cpu_temp_c=round(_cpu_temp_c, 1) if _cpu_temp_c else None,
+                        snapshot_s3_key=snapshot_s3_key,
                     )
 
                     logger.debug(

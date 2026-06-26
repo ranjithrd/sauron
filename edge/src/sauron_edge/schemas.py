@@ -64,6 +64,9 @@ class TelemetryPayload(BaseModel):
     cpu_temp_c: Optional[float] = None
     """CPU/SoC temperature in Celsius, sampled every ~10 seconds."""
 
+    snapshot_s3_key: Optional[str] = None
+    """S3 object key of the latest uploaded snapshot frame, if any."""
+
     @classmethod
     def build(
         cls,
@@ -79,6 +82,7 @@ class TelemetryPayload(BaseModel):
         resolution_w: Optional[int] = None,
         resolution_h: Optional[int] = None,
         cpu_temp_c: Optional[float] = None,
+        snapshot_s3_key: Optional[str] = None,
     ) -> "TelemetryPayload":
         """Convenience factory — assembles the full payload from flat sensor readings."""
         return cls(
@@ -93,4 +97,5 @@ class TelemetryPayload(BaseModel):
             resolution_w=resolution_w,
             resolution_h=resolution_h,
             cpu_temp_c=cpu_temp_c,
+            snapshot_s3_key=snapshot_s3_key,
         )

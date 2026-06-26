@@ -27,6 +27,7 @@ let rayLayers      = {};   // `${device_id}__${object_id}` → L.Polyline
 let dotLayers      = {};   // `${tri_lat},${tri_lon}` → L.CircleMarker
 let mapFitted      = false;
 let lastUpdateTime = null;
+let telemetryOn    = true; // mirrors server state
 
 const RAY_PALETTE = ['#4f7fe4', '#e4844f', '#5bc45b', '#c4a94f', '#9b72cf'];
 const deviceColours = {};
@@ -98,7 +99,6 @@ function buildFovPoints(lat, lon, bearingDeg, fovDeg, radiusM = 300) {
 
 const _METERS_PER_DEG_LAT = 111320;
 
-// Project a ray from (lat, lon) in ENU direction (dx=East, dy=North) by distanceM metres.
 function _rayEndpoint(lat, lon, dx, dy, distanceM) {
     const refLatRad = lat * Math.PI / 180;
     const metersPerDegLon = _METERS_PER_DEG_LAT * Math.cos(refLatRad);
@@ -172,6 +172,25 @@ async function updateRays() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Snapshots
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function refreshSnapshot(deviceId) {
+    try {
+        const res = await fetch(`/api/cameras/${encodeURIComponent(deviceId)}/snapshot`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const wrap = document.getElementById(`snap-wrap-${CSS.escape(deviceId)}`);
+        const img  = document.getElementById(`snap-img-${CSS.escape(deviceId)}`);
+        const ts   = document.getElementById(`snap-ts-${CSS.escape(deviceId)}`);
+        if (!wrap || !img) return;
+        img.src = data.url;
+        wrap.classList.add('visible');
+        if (ts && data.time) ts.textContent = relTime(data.time);
+    } catch (_) {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Cameras
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -225,7 +244,6 @@ async function loadCameras() {
 
         if (isValid) {
             if (!cameraMarkers[cam.device_id]) {
-                // Coloured camera icon matching its ray colour
                 const icon = L.divIcon({
                     className: '',
                     html: `<div style="width:10px;height:10px;border-radius:50%;background:${colour};border:2px solid rgba(255,255,255,0.5);"></div>`,
@@ -255,6 +273,7 @@ async function loadCameras() {
 
         const dotClass = isStale ? 'dot stale' : 'dot';
         const colourStyle = `style="background:${colour};box-shadow:0 0 4px ${colour}"`;
+        const safeId = cam.device_id.replace(/[^a-zA-Z0-9_-]/g, '_');
         html += `
         <div class="camera-card">
             <div class="camera-id">
@@ -269,10 +288,17 @@ async function loadCameras() {
             </div>
             <div class="camera-coords">${fmt(lat, 6)}, ${fmt(lon, 6)}</div>
             <div class="camera-lastseen">Last seen: ${seenAgo}</div>
+            <div class="snapshot-wrap" id="snap-wrap-${safeId}">
+                <img class="snapshot-img" id="snap-img-${safeId}" alt="latest frame" />
+                <div class="snapshot-time" id="snap-ts-${safeId}"></div>
+            </div>
         </div>`;
     });
 
     if (data.length > 0) container.innerHTML = html;
+
+    // Refresh snapshots after DOM is updated
+    data.forEach(cam => refreshSnapshot(cam.device_id));
 
     Object.keys(cameraMarkers).forEach(id => {
         if (!seenIds.has(id)) {
@@ -382,15 +408,105 @@ async function updateTracks() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Telemetry toggle
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function onTelemetryBtn() {
+    const next = !telemetryOn;
+    try {
+        await fetch('/api/telemetry/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: next }),
+        });
+        telemetryOn = next;
+        _updateTelemetryBtn();
+    } catch (e) {
+        console.error('Telemetry toggle failed:', e);
+    }
+}
+
+function _updateTelemetryBtn() {
+    const btn = document.getElementById('btn-telemetry');
+    if (!btn) return;
+    if (telemetryOn) {
+        btn.textContent = 'Pause IoT';
+        btn.classList.remove('success');
+        btn.classList.add('danger');
+    } else {
+        btn.textContent = 'Resume IoT';
+        btn.classList.remove('danger');
+        btn.classList.add('success', 'active');
+    }
+}
+
+async function syncTelemetryStatus() {
+    try {
+        const res = await fetch('/api/telemetry/status');
+        const data = await res.json();
+        telemetryOn = data.enabled;
+        _updateTelemetryBtn();
+    } catch (_) {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VLM
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function onVLMToggle(enabled) {
+    try {
+        await fetch('/api/vlm/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+        });
+    } catch (e) {
+        console.error('VLM toggle failed:', e);
+    }
+}
+
+async function loadVLMStatus() {
+    try {
+        const res = await fetch('/api/vlm/status');
+        const s = await res.json();
+
+        const chk = document.getElementById('vlm-toggle');
+        if (chk) chk.checked = s.enabled;
+
+        const resultEl = document.getElementById('vlm-result');
+        const metaEl   = document.getElementById('vlm-meta');
+
+        if (s.last_result) {
+            resultEl.textContent = s.last_result;
+            resultEl.style.display = 'block';
+            if (metaEl) {
+                const ago = s.last_run ? relTime(new Date(s.last_run * 1000).toISOString()) : '—';
+                metaEl.textContent = `${s.model || ''} · ${ago}${s.last_device_id ? ' · ' + s.last_device_id : ''}`;
+            }
+        } else if (s.last_error) {
+            resultEl.textContent = 'Error: ' + s.last_error;
+            resultEl.style.display = 'block';
+            if (metaEl) metaEl.textContent = '';
+        } else {
+            resultEl.style.display = 'none';
+            if (metaEl) metaEl.textContent = s.enabled ? 'Waiting for snapshot…' : '';
+        }
+    } catch (_) {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Boot
 // ─────────────────────────────────────────────────────────────────────────────
 
+syncTelemetryStatus();
 loadCameras();
 loadStats();
 updateTracks();
 updateRays();
+loadVLMStatus();
 
-setInterval(updateTracks, 500);
-setInterval(updateRays,   500);
-setInterval(loadCameras, 5_000);
-setInterval(loadStats,   5_000);
+setInterval(updateTracks,  500);
+setInterval(updateRays,    500);
+setInterval(loadCameras,  5_000);
+setInterval(loadStats,    5_000);
+setInterval(loadVLMStatus, 5_000);

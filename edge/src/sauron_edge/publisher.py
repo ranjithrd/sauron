@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 from typing import Optional
 
@@ -32,6 +33,8 @@ _PUBLISH_TIMEOUT_S = 10.0
 # caps at 60 s.  Resets to the initial value on a successful connection.
 _RECONNECT_BACKOFF_INITIAL_S = 5.0
 _RECONNECT_BACKOFF_MAX_S = 60.0
+
+_COMMANDS_TOPIC = "devices/all/commands"
 
 
 def resolve_device_id() -> str:
@@ -88,6 +91,12 @@ class GreengrassPublisher:
         # that we stop hammering the nucleus with doomed publish requests while
         # the IPC socket itself remains open.
         self._publish_backoff_until: float = 0.0
+
+        # Telemetry toggle — can be flipped by the command listener thread
+        self.telemetry_enabled: bool = True
+
+        self._cmd_thread: Optional[threading.Thread] = None
+        self._cmd_stop: threading.Event = threading.Event()
 
         logger.info(
             "Publisher: initialised — device_id=%s topic=%s",
@@ -292,6 +301,70 @@ class GreengrassPublisher:
             # Mark connection dirty — will reconnect on next publish()
             self._connected = False
             return False
+
+    # ------------------------------------------------------------------
+    # Command listener (telemetry toggle)
+    # ------------------------------------------------------------------
+
+    def start_command_listener(self) -> None:
+        """Start a daemon thread that subscribes to the global commands topic."""
+        if self._cmd_thread and self._cmd_thread.is_alive():
+            return
+        self._cmd_stop.clear()
+        self._cmd_thread = threading.Thread(
+            target=self._command_listener_loop,
+            name="cmd-listener",
+            daemon=True,
+        )
+        self._cmd_thread.start()
+        logger.info("Publisher: command listener thread started (topic=%s)", _COMMANDS_TOPIC)
+
+    def stop_command_listener(self) -> None:
+        self._cmd_stop.set()
+        if self._cmd_thread:
+            self._cmd_thread.join(timeout=3.0)
+
+    def _command_listener_loop(self) -> None:
+        while not self._cmd_stop.is_set():
+            try:
+                import awsiot.greengrasscoreipc as gg_ipc  # type: ignore[import]
+                from awsiot.greengrasscoreipc.model import (  # type: ignore[import]
+                    QOS,
+                    SubscribeToIoTCoreRequest,
+                )
+
+                client = gg_ipc.connect()
+                request = SubscribeToIoTCoreRequest(
+                    topic_name=_COMMANDS_TOPIC,
+                    qos=QOS.AT_LEAST_ONCE,
+                )
+                operation = client.new_subscribe_to_iot_core()
+                operation.activate(request)
+
+                while not self._cmd_stop.is_set():
+                    event = operation.get_response().result(timeout=5.0)
+                    if event and event.message and event.message.payload:
+                        try:
+                            msg = json.loads(event.message.payload.decode("utf-8"))
+                            if msg.get("action") == "set_telemetry":
+                                enabled = bool(msg.get("enabled", True))
+                                self.telemetry_enabled = enabled
+                                logger.info(
+                                    "Publisher: telemetry %s via command",
+                                    "ENABLED" if enabled else "DISABLED",
+                                )
+                        except (json.JSONDecodeError, AttributeError) as exc:
+                            logger.warning("Publisher: malformed command message: %s", exc)
+
+            except ImportError:
+                logger.warning("Publisher: awsiotsdk not available — command listener disabled")
+                break
+            except Exception as exc:
+                if not self._cmd_stop.is_set():
+                    logger.warning(
+                        "Publisher: command listener error — %s. Retrying in 10s.", exc
+                    )
+                    self._cmd_stop.wait(timeout=10.0)
 
     # ------------------------------------------------------------------
     # Diagnostics

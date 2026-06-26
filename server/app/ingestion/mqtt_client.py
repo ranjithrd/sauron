@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable, List
 from pydantic import ValidationError
 
 from app.config import settings
-from app.db.writer import upsert_camera
+from app.db.writer import upsert_camera, upsert_snapshot
 from app.ingestion.schemas import TelemetryPayload
 
 try:
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _TOPIC_FILTER = "devices/+/telemetry"
 _RECONNECT_DELAY_S = 5.0
+_PUBLISH_TIMEOUT_S = 10.0
 
 
 @dataclass
@@ -107,6 +108,25 @@ class MQTTClient:
             await self._run_task
 
         await self._disconnect_current()
+
+    async def publish(self, topic: str, payload: dict) -> bool:
+        """Publish *payload* JSON to *topic* via the active MQTT connection."""
+        if self._connection is None:
+            logger.warning("MQTTClient.publish: no active connection — skipping")
+            return False
+        try:
+            body = json.dumps(payload).encode("utf-8")
+            pub_future, _ = self._connection.publish(
+                topic=topic,
+                payload=body,
+                qos=mqtt.QoS.AT_LEAST_ONCE,
+            )
+            await asyncio.to_thread(pub_future.result, _PUBLISH_TIMEOUT_S)
+            logger.debug("MQTTClient: published to %s", topic)
+            return True
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("MQTTClient.publish failed: %s", exc)
+            return False
 
     async def _connect_and_subscribe(self) -> None:
         endpoint = self._normalize_iot_endpoint(settings.IOT_ENDPOINT)
@@ -254,6 +274,20 @@ class MQTTClient:
                 exc,
                 exc_info=exc,
             )
+
+        if payload_model.snapshot_s3_key:
+            try:
+                await upsert_snapshot(
+                    device_id=device_id,
+                    s3_key=payload_model.snapshot_s3_key,
+                    ts=payload_model.timestamp,
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.error(
+                    "MQTTClient: failed to upsert snapshot for %s: %s",
+                    device_id,
+                    exc,
+                )
 
         logger.debug(
             "MQTTClient: received from %s — ncoords=%d ts=%.3f heading=%.1f° pitch=%.1f° roll=%.1f°",

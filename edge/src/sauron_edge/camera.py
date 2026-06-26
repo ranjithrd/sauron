@@ -417,6 +417,117 @@ class RTSPCamera(CameraSource):
 
 
 # ---------------------------------------------------------------------------
+# NTP-synced video loop backend
+# ---------------------------------------------------------------------------
+
+
+class NTPLoopCamera(CameraSource):
+    """
+    Plays a video file on a loop that is synchronised to wall-clock (NTP) time.
+
+    Frame selection: frame_idx = floor((unix_time % duration_s) * fps) % total_frames
+
+    Because all NTP-synced clocks share the same unix_time, two edge agents
+    playing the same file will always be on the same frame at the same instant
+    — making multi-camera test footage fully coordinated.
+
+    Constraint: best results when 60 % duration_s == 0 so that the loop
+    realigns at every minute boundary (durations: 1 2 3 4 5 6 10 12 15 20 30 60s).
+
+    All frames are preloaded into RAM at start() to avoid seek latency.
+    """
+
+    def __init__(self, filepath: str, width: int, height: int) -> None:
+        self._filepath = filepath
+        self._width = width
+        self._height = height
+        self._frames: list = []
+        self._fps: float = 25.0
+        self._duration_s: float = 0.0
+        self._total: int = 0
+        self._alive: bool = False
+
+    @property
+    def actual_width(self) -> int:
+        return self._width
+
+    @property
+    def actual_height(self) -> int:
+        return self._height
+
+    @property
+    def actual_fps(self) -> float:
+        return self._fps
+
+    def start(self) -> None:
+        import cv2 as _cv2
+
+        cap = _cv2.VideoCapture(self._filepath)
+        if not cap.isOpened():
+            raise RuntimeError(
+                f"NTPLoopCamera: could not open video file {self._filepath!r}"
+            )
+
+        total_frames = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(_cv2.CAP_PROP_FPS) or 25.0
+        duration_s = total_frames / fps if fps > 0 else 0.0
+
+        if duration_s > 0:
+            remainder = 60.0 % duration_s
+            if remainder > 0.1:
+                logger.warning(
+                    "NTPLoopCamera: video duration %.2fs does not divide 60s "
+                    "(remainder %.2fs) — loops will not realign at minute boundaries",
+                    duration_s,
+                    remainder,
+                )
+
+        frames: list = []
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frames.append(_cv2.resize(frame, (self._width, self._height)))
+        cap.release()
+
+        if not frames:
+            raise RuntimeError(
+                f"NTPLoopCamera: no frames could be read from {self._filepath!r}"
+            )
+
+        self._frames = frames
+        self._fps = fps
+        self._duration_s = duration_s if duration_s > 0 else len(frames) / fps
+        self._total = len(frames)
+        self._alive = True
+
+        mem_mb = (self._width * self._height * 3 * self._total) / (1024 * 1024)
+        logger.info(
+            "NTPLoopCamera: loaded %d frames (%.2fs @ %.1f fps) from %s — %.0f MB RAM",
+            self._total,
+            self._duration_s,
+            self._fps,
+            self._filepath,
+            mem_mb,
+        )
+
+    def stop(self) -> None:
+        self._alive = False
+        self._frames.clear()
+        logger.info("NTPLoopCamera: stopped, frames released")
+
+    def read(self) -> Optional[np.ndarray]:
+        if not self._frames:
+            return None
+        pos_s = time.time() % self._duration_s
+        idx = int(pos_s * self._fps) % self._total
+        return self._frames[idx].copy()
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -454,6 +565,24 @@ def make_camera(cfg) -> CameraSource:
         )
         return RTSPCamera(
             url=cfg.camera_rtsp_url,
+            width=cfg.camera_width(),
+            height=cfg.camera_height(),
+        )
+
+    if cfg.camera_source == "ntp_loop":
+        if not cfg.camera_ntp_loop_file:
+            raise ValueError(
+                "camera_source is 'ntp_loop' but camera_ntp_loop_file is empty — "
+                "set it in config.yaml"
+            )
+        logger.info(
+            "make_camera: selecting NTPLoopCamera (%s, %dx%d)",
+            cfg.camera_ntp_loop_file,
+            cfg.camera_width(),
+            cfg.camera_height(),
+        )
+        return NTPLoopCamera(
+            filepath=cfg.camera_ntp_loop_file,
             width=cfg.camera_width(),
             height=cfg.camera_height(),
         )

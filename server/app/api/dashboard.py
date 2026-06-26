@@ -5,13 +5,17 @@ dashboard.py — API routes for the frontend visualizer.
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict, List
+import logging
+from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from app.db.queries import get_all_cameras, get_live_rays, get_live_tracks
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
@@ -20,6 +24,10 @@ def _serialize(data: Any) -> Any:
     """Convert datetime/timedelta/UUID objects to JSON-safe types."""
     return jsonable_encoder(data)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Basic dashboard endpoints
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/cameras")
 async def api_get_cameras() -> JSONResponse:
@@ -49,7 +57,6 @@ async def api_get_stats(within_seconds: int = 5) -> JSONResponse:
     tracks = await get_live_tracks(within_seconds=within_seconds)
 
     now = datetime.datetime.now(tz=datetime.timezone.utc)
-    # Find the most recent camera heartbeat
     last_camera_seen: str | None = None
     for cam in cameras:
         seen = cam.get("last_seen")
@@ -64,3 +71,122 @@ async def api_get_stats(within_seconds: int = 5) -> JSONResponse:
         "last_camera_seen": last_camera_seen,
     }
     return JSONResponse(content=_serialize(stats))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Snapshot (S3 pre-signed URL)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/cameras/{device_id}/snapshot")
+async def api_get_snapshot(device_id: str) -> JSONResponse:
+    """Return a pre-signed S3 URL for the latest snapshot from *device_id*."""
+    from app.config import settings
+    from app.db.connection import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT s3_snapshot_key, s3_snapshot_time FROM cameras WHERE device_id = $1",
+            device_id,
+        )
+
+    if row is None or not row["s3_snapshot_key"]:
+        raise HTTPException(status_code=404, detail="No snapshot available for this camera")
+
+    if not settings.AWS_S3_BUCKET:
+        raise HTTPException(status_code=503, detail="AWS_S3_BUCKET not configured")
+
+    try:
+        import boto3  # type: ignore[import]
+
+        kwargs: dict = {}
+        if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+            kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
+            kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
+        if settings.AWS_REGION:
+            kwargs["region_name"] = settings.AWS_REGION
+
+        s3 = boto3.client("s3", **kwargs)
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": settings.AWS_S3_BUCKET, "Key": row["s3_snapshot_key"]},
+            ExpiresIn=300,
+        )
+    except Exception as exc:
+        logger.error("Snapshot presign failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to generate presigned URL") from exc
+
+    return JSONResponse(content={
+        "url": url,
+        "s3_key": row["s3_snapshot_key"],
+        "time": _serialize(row["s3_snapshot_time"]),
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Telemetry toggle
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ToggleBody(BaseModel):
+    enabled: bool
+
+
+@router.get("/telemetry/status")
+async def api_telemetry_status(request: Request) -> JSONResponse:
+    enabled = getattr(request.app.state, "telemetry_enabled", True)
+    return JSONResponse(content={"enabled": enabled})
+
+
+@router.post("/telemetry/toggle")
+async def api_telemetry_toggle(body: ToggleBody, request: Request) -> JSONResponse:
+    """Publish a command to all edge devices to enable/disable telemetry publishing."""
+    request.app.state.telemetry_enabled = body.enabled
+
+    mqtt_client = getattr(request.app.state, "mqtt_client", None)
+    if mqtt_client is not None:
+        try:
+            await mqtt_client.publish(
+                "devices/all/commands",
+                {"action": "set_telemetry", "enabled": body.enabled},
+            )
+        except Exception as exc:
+            logger.warning("Telemetry toggle publish failed: %s", exc)
+
+    logger.info("Telemetry toggle → %s", "enabled" if body.enabled else "disabled")
+    return JSONResponse(content={"enabled": body.enabled})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VLM
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/vlm/status")
+async def api_vlm_status(request: Request) -> JSONResponse:
+    scheduler = getattr(request.app.state, "vlm_scheduler", None)
+    if scheduler is None:
+        return JSONResponse(content={"enabled": False, "error": "scheduler not initialised"})
+    return JSONResponse(content=_serialize(scheduler.status()))
+
+
+@router.post("/vlm/toggle")
+async def api_vlm_toggle(body: ToggleBody, request: Request) -> JSONResponse:
+    scheduler = getattr(request.app.state, "vlm_scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="VLM scheduler not initialised")
+    scheduler.toggle(body.enabled)
+    return JSONResponse(content={"enabled": body.enabled})
+
+
+@router.get("/vlm/latest")
+async def api_vlm_latest() -> JSONResponse:
+    """Return the most recent VLM analysis result."""
+    from app.db.connection import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM vlm_analyses ORDER BY created_at DESC LIMIT 1"
+        )
+    if row is None:
+        return JSONResponse(content=None)
+    return JSONResponse(content=_serialize(dict(row)))

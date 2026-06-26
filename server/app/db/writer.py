@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import datetime
 import logging
-from typing import List, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 from app.db.connection import get_pool
 from app.kalman.tracker import SmoothedPosition
@@ -100,3 +100,47 @@ async def upsert_camera(
             roll,
         )
     logger.debug("DB: upserted camera %s", device_id)
+
+
+async def upsert_snapshot(device_id: str, s3_key: str, ts: float) -> None:
+    """Store the latest S3 snapshot key for a camera."""
+    pool = await get_pool()
+    time_dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE cameras
+            SET s3_snapshot_key = $2, s3_snapshot_time = $3
+            WHERE device_id = $1
+            """,
+            device_id,
+            s3_key,
+            time_dt,
+        )
+    logger.debug("DB: upserted snapshot for %s → %s", device_id, s3_key)
+
+
+async def write_vlm_result(
+    device_id: Optional[str],
+    s3_key: Optional[str],
+    model: str,
+    result: Optional[str],
+    error: Optional[str],
+    duration_ms: int,
+) -> None:
+    """Persist a VLM analysis result."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO vlm_analyses (device_id, s3_key, model, result, error, duration_ms)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            device_id,
+            s3_key,
+            model,
+            result,
+            error,
+            duration_ms,
+        )
+    logger.debug("DB: wrote VLM result for device=%s key=%s", device_id, s3_key)

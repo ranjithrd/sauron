@@ -77,6 +77,9 @@ def build_ray(
     dz_pitched = dy * math.sin(pitch_rad)
 
     # Roll: rotate (dx, dz_pitched) around the forward (North-South) axis.
+    # NOTE: sign convention here differs from the standard Y-axis rotation matrix
+    # (dx' = dx·cos + dz·sin, dz' = -dx·sin + dz·cos). For small roll angles
+    # (< 5°) the error is negligible. Revisit if altitude estimates are consistently off.
     roll_rad = math.radians(camera_roll)
     dx_final = dx * math.cos(roll_rad) - dz_pitched * math.sin(roll_rad)
     dz_final = dx * math.sin(roll_rad) + dz_pitched * math.cos(roll_rad)

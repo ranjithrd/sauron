@@ -80,7 +80,22 @@ _CAMERA_SCHEMA_MIGRATIONS = [
     "ALTER TABLE cameras DROP COLUMN IF EXISTS rtsp_url",
     "ALTER TABLE cameras DROP COLUMN IF EXISTS bearing_deg",
     "ALTER TABLE cameras DROP COLUMN IF EXISTS fov_deg",
+    "ALTER TABLE cameras ADD COLUMN IF NOT EXISTS s3_snapshot_key TEXT",
+    "ALTER TABLE cameras ADD COLUMN IF NOT EXISTS s3_snapshot_time TIMESTAMPTZ",
 ]
+
+_CREATE_VLM_ANALYSES = """
+CREATE TABLE IF NOT EXISTS vlm_analyses (
+    id          SERIAL PRIMARY KEY,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    device_id   TEXT,
+    s3_key      TEXT,
+    model       TEXT,
+    result      TEXT,
+    error       TEXT,
+    duration_ms INT
+);
+"""
 
 
 async def init_db() -> None:
@@ -95,6 +110,7 @@ async def init_db() -> None:
         await conn.execute(_CREATE_OBJECT_TRACKS_IDX)
         await conn.execute(_CREATE_CAMERAS)
         await conn.execute(_CREATE_DETECTION_RAYS)
+        await conn.execute(_CREATE_VLM_ANALYSES)
         for statement in _DETECTION_RAYS_MIGRATIONS:
             await conn.execute(statement)
         for statement in _OBJECT_TRACKS_MIGRATIONS:

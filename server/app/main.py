@@ -24,6 +24,7 @@ from app.db.writer import write_rays, write_track
 from app.ingestion.mqtt_client import MQTTClient
 from app.kalman.tracker import KalmanTracker
 from app.triangulation.pipeline import TriangulationPipeline
+from app.vlm.scheduler import VLMScheduler
 
 
 @asynccontextmanager
@@ -38,13 +39,19 @@ async def lifespan(app: FastAPI):
     mqtt_client.on_detection(pipeline.handle_detection)
 
     await pipeline.start()
-    
+
+    # ── VLM scheduler ────────────────────────────────────────────────
+    vlm_scheduler = VLMScheduler()
+
     # ── Background Tasks ──────────────────────────────────────────────
     asyncio.create_task(mqtt_client.run(), name="mqtt-client-loop")
+    asyncio.create_task(vlm_scheduler.run(), name="vlm-scheduler")
 
     app.state.mqtt_client = mqtt_client
     app.state.pipeline = pipeline
     app.state.kalman_tracker = kalman_tracker
+    app.state.vlm_scheduler = vlm_scheduler
+    app.state.telemetry_enabled = True
 
     yield
 

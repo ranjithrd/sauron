@@ -43,8 +43,13 @@ ComponentAccessControl:
   aws.greengrass.ipc.mqttproxy:
     com.sauron.edge:mqttproxy:1:
       policyDescription: >
-        Allow the edge component to publish telemetry to its device topic.
+        Allow the edge component to publish telemetry and subscribe to commands.
       operations:
         - aws.greengrass#PublishToIoTCore
+        - aws.greengrass#SubscribeToIoTCore
       resources:
         - "devices/*/telemetry"
+        - "devices/all/commands"
+# NOTE: S3 snapshot uploads use boto3 with the component's execution role.
+# Add s3:PutObject for your bucket to the Greengrass token exchange role policy:
+#   Resource: arn:aws:s3:::YOUR_BUCKET_NAME/snapshots/*

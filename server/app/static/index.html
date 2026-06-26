@@ -34,9 +34,16 @@
 
         /* Sidebar header */
         #sidebar-header {
-            padding: 16px 16px 14px;
+            padding: 14px 16px 12px;
             border-bottom: 1px solid rgba(255,255,255,0.07);
             flex-shrink: 0;
+        }
+
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
         }
 
         #sidebar-header h1 {
@@ -45,7 +52,6 @@
             letter-spacing: 0.1em;
             color: #8892a0;
             text-transform: uppercase;
-            margin-bottom: 14px;
         }
 
         .stat-row { display: flex; gap: 20px; }
@@ -69,6 +75,36 @@
         .stat-badge .value.warn { color: #c9920a; }
         .stat-badge .value.ok   { color: #3fb950; }
         .stat-badge .value.err  { color: #e5534b; }
+
+        /* Control buttons in header */
+        .ctrl-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .ctrl-btn {
+            flex: 1;
+            padding: 5px 8px;
+            border-radius: 4px;
+            font-size: 0.65rem;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.04);
+            color: #7a8899;
+            transition: background 0.15s, color 0.15s;
+        }
+
+        .ctrl-btn:hover { background: rgba(255,255,255,0.08); color: #e2e5eb; }
+
+        .ctrl-btn.danger        { border-color: rgba(229,83,75,0.3); color: #e5534b; }
+        .ctrl-btn.danger:hover  { background: rgba(229,83,75,0.12); }
+        .ctrl-btn.danger.active { background: rgba(229,83,75,0.2); color: #e5534b; border-color: rgba(229,83,75,0.5); }
+
+        .ctrl-btn.success        { border-color: rgba(63,185,80,0.3); color: #3fb950; }
+        .ctrl-btn.success:hover  { background: rgba(63,185,80,0.12); }
+        .ctrl-btn.success.active { background: rgba(63,185,80,0.2); color: #3fb950; border-color: rgba(63,185,80,0.5); }
 
         /* Sidebar scrollable body */
         #sidebar-body { flex: 1; overflow-y: auto; }
@@ -148,6 +184,31 @@
             margin-top: 2px;
         }
 
+        /* Snapshot image */
+        .snapshot-wrap {
+            margin-top: 8px;
+            border-radius: 4px;
+            overflow: hidden;
+            background: #0d111a;
+            border: 1px solid rgba(255,255,255,0.05);
+            display: none;
+        }
+
+        .snapshot-wrap.visible { display: block; }
+
+        .snapshot-img {
+            width: 100%;
+            display: block;
+            object-fit: cover;
+        }
+
+        .snapshot-time {
+            font-size: 0.58rem;
+            color: #2a3348;
+            padding: 3px 6px;
+            text-align: right;
+        }
+
         /* Track cards */
         .track-card {
             padding: 12px 16px;
@@ -209,6 +270,73 @@
             color: #e5534b;
         }
 
+        /* VLM panel */
+        #vlm-panel {
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+
+        #vlm-result {
+            font-size: 0.7rem;
+            color: #7a8899;
+            margin-top: 8px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        #vlm-meta {
+            font-size: 0.6rem;
+            color: #2a3348;
+            margin-top: 4px;
+        }
+
+        .vlm-toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+
+        .vlm-label {
+            font-size: 0.7rem;
+            color: #5a6680;
+        }
+
+        /* Toggle switch */
+        .toggle-switch {
+            position: relative;
+            width: 36px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+
+        .toggle-track {
+            position: absolute;
+            inset: 0;
+            background: #1e2738;
+            border-radius: 10px;
+            transition: background 0.2s;
+            border: 1px solid rgba(255,255,255,0.08);
+        }
+
+        .toggle-track::after {
+            content: '';
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #3a4458;
+            top: 2px;
+            left: 2px;
+            transition: transform 0.2s, background 0.2s;
+        }
+
+        .toggle-switch input:checked + .toggle-track { background: #1a3a2a; border-color: rgba(63,185,80,0.3); }
+        .toggle-switch input:checked + .toggle-track::after { transform: translateX(16px); background: #3fb950; }
+
         /* Footer */
         #sidebar-footer {
             padding: 7px 16px;
@@ -253,7 +381,9 @@
     <!-- ── Sidebar ── -->
     <div id="sidebar">
         <div id="sidebar-header">
-            <h1>Sauron</h1>
+            <div class="header-top">
+                <h1>Sauron</h1>
+            </div>
             <div class="stat-row">
                 <div class="stat-badge">
                     <span class="label">Cameras</span>
@@ -268,6 +398,11 @@
                     <span class="value" id="stat-updated" style="font-size:0.75rem">—</span>
                 </div>
             </div>
+            <div class="ctrl-row">
+                <button class="ctrl-btn danger" id="btn-telemetry" onclick="onTelemetryBtn()">
+                    Pause IoT
+                </button>
+            </div>
         </div>
 
         <div id="sidebar-body">
@@ -279,12 +414,22 @@
                 <div class="empty-state">Loading cameras…</div>
             </div>
 
-            <div class="section-header">
-                Live Tracks
-                <span class="count" id="track-count">0</span>
-            </div>
+            <div class="section-header">Live Tracks <span class="count" id="track-count">0</span></div>
             <div id="tracks-container">
                 <div class="empty-state">Waiting for data…</div>
+            </div>
+
+            <div class="section-header">VLM Analysis</div>
+            <div id="vlm-panel">
+                <div class="vlm-toggle-row">
+                    <span class="vlm-label">Auto-analyze snapshots</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="vlm-toggle" onchange="onVLMToggle(this.checked)">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+                <div id="vlm-result" style="display:none"></div>
+                <div id="vlm-meta"></div>
             </div>
         </div>
 

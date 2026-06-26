@@ -75,6 +75,25 @@ class DetectionConfig(BaseModel):
     """
 
 
+class ImageUploadConfig(BaseModel):
+    """Periodic snapshot upload to S3."""
+
+    enabled: bool = False
+    """Set to true to enable snapshot uploads."""
+
+    min_interval_s: float = 5.0
+    """Minimum seconds between uploads. Upload is skipped if the interval has not elapsed."""
+
+    s3_bucket: str = ""
+    """S3 bucket name. Falls back to AWS_S3_BUCKET env var if empty."""
+
+    s3_prefix: str = "snapshots"
+    """Key prefix for uploaded objects."""
+
+    jpeg_quality: int = 75
+    """JPEG quality 1-100."""
+
+
 class SensorsConfig(BaseModel):
     """Hardware sensor settings."""
 
@@ -144,10 +163,13 @@ class Configuration(BaseModel):
     """Full runtime configuration for the edge component."""
 
     camera_source: str = "raspi"
-    """Video source. One of 'raspi' (V4L2 /dev/video0) or 'rtsp'."""
+    """Video source. One of 'raspi' (V4L2 /dev/video0), 'rtsp', or 'ntp_loop'."""
 
     camera_rtsp_url: str = ""
     """RTSP stream URL. Required when camera_source == 'rtsp'."""
+
+    camera_ntp_loop_file: str = ""
+    """Absolute path to video file for NTP-synchronised looping. Required when camera_source == 'ntp_loop'."""
 
     camera_dimensions: str = "640x480"
     """Frame dimensions as 'WxH'. Applied to both capture and output."""
@@ -166,12 +188,13 @@ class Configuration(BaseModel):
 
     detection: DetectionConfig = DetectionConfig()
     sensors: SensorsConfig = SensorsConfig()
+    image_upload: ImageUploadConfig = ImageUploadConfig()
 
     @field_validator("camera_source")
     @classmethod
     def _validate_camera_source(cls, v: str) -> str:
-        if v not in ("raspi", "rtsp"):
-            raise ValueError(f"camera_source must be 'raspi' or 'rtsp', got {v!r}")
+        if v not in ("raspi", "rtsp", "ntp_loop"):
+            raise ValueError(f"camera_source must be 'raspi', 'rtsp', or 'ntp_loop', got {v!r}")
         return v
 
     @field_validator("camera_rtsp_url")

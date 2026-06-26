@@ -437,10 +437,11 @@ class NTPLoopCamera(CameraSource):
     All frames are preloaded into RAM at start() to avoid seek latency.
     """
 
-    def __init__(self, filepath: str, width: int, height: int) -> None:
+    def __init__(self, filepath: str, width: int, height: int, reverse: bool = False) -> None:
         self._filepath = filepath
         self._width = width
         self._height = height
+        self._reverse = reverse
         self._frames: list = []
         self._fps: float = 25.0
         self._duration_s: float = 0.0
@@ -495,6 +496,9 @@ class NTPLoopCamera(CameraSource):
                 f"NTPLoopCamera: no frames could be read from {self._filepath!r}"
             )
 
+        if self._reverse:
+            frames = frames[::-1]
+
         self._frames = frames
         self._fps = fps
         self._duration_s = duration_s if duration_s > 0 else len(frames) / fps
@@ -503,12 +507,13 @@ class NTPLoopCamera(CameraSource):
 
         mem_mb = (self._width * self._height * 3 * self._total) / (1024 * 1024)
         logger.info(
-            "NTPLoopCamera: loaded %d frames (%.2fs @ %.1f fps) from %s — %.0f MB RAM",
+            "NTPLoopCamera: loaded %d frames (%.2fs @ %.1f fps) from %s — %.0f MB RAM%s",
             self._total,
             self._duration_s,
             self._fps,
             self._filepath,
             mem_mb,
+            " [REVERSED]" if self._reverse else "",
         )
 
     def stop(self) -> None:
@@ -585,6 +590,7 @@ def make_camera(cfg) -> CameraSource:
             filepath=cfg.camera_ntp_loop_file,
             width=cfg.camera_width(),
             height=cfg.camera_height(),
+            reverse=cfg.camera_ntp_loop_reverse,
         )
 
     # Should never reach here — validator in Configuration catches this

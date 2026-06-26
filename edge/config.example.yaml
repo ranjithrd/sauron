@@ -24,6 +24,10 @@ camera_rtsp_url: ""
 # Example: /home/pi/test-footage/10s-scene.mp4
 camera_ntp_loop_file: ""
 
+# When true, play the ntp_loop video in reverse order.
+# All agents with the same setting remain frame-synchronised.
+camera_ntp_loop_reverse: false
+
 # Desired capture resolution as "WIDTHxHEIGHT". The actual resolution
 # may differ depending on what the device supports.
 camera_dimensions: "640x480"

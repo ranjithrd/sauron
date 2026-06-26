@@ -187,6 +187,9 @@ class Configuration(BaseModel):
     camera_ntp_loop_file: str = ""
     """Absolute path to video file for NTP-synchronised looping. Required when camera_source == 'ntp_loop'."""
 
+    camera_ntp_loop_reverse: bool = False
+    """When true, play the ntp_loop video in reverse. All agents with the same setting stay in sync."""
+
     camera_dimensions: str = "640x480"
     """Frame dimensions as 'WxH'. Applied to both capture and output."""
 

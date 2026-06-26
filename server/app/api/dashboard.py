@@ -98,8 +98,9 @@ async def api_get_snapshot(device_id: str) -> JSONResponse:
 
     try:
         import boto3  # type: ignore[import]
+        from botocore.config import Config  # type: ignore[import]
 
-        kwargs: dict = {}
+        kwargs: dict = {"config": Config(signature_version="s3v4")}
         if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
             kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
             kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY

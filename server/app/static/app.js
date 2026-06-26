@@ -23,12 +23,12 @@ let cameraMarkers  = {};   // device_id → L.Marker
 let fovPolygons    = {};   // device_id → L.Polygon
 let objectMarkers  = {};   // object_id → L.Marker
 let velocityLines  = {};   // object_id → L.Polyline
-let rayLines       = [];   // [L.Polyline] — rebuilt every poll
+let rayLayers      = {};   // `${device_id}__${object_id}` → L.Polyline
+let dotLayers      = {};   // `${tri_lat},${tri_lon}` → L.CircleMarker
 let mapFitted      = false;
 let lastUpdateTime = null;
 
-// Stable colour per device (cycles through palette for any number of cameras)
-const RAY_PALETTE = ['#ff6600', '#aa44ff', '#00ccff', '#ffcc00', '#ff44aa'];
+const RAY_PALETTE = ['#4f7fe4', '#e4844f', '#5bc45b', '#c4a94f', '#9b72cf'];
 const deviceColours = {};
 let deviceColourIdx = 0;
 
@@ -117,55 +117,57 @@ async function updateRays() {
         return;
     }
 
-    // Remove all previous ray lines
-    rayLines.forEach(l => map.removeLayer(l));
-    rayLines = [];
-
-    // Collect intersection points keyed by tri position so we draw one dot per intersection.
-    const intersections = {};
+    const seenRays = new Set();
+    const seenDots = new Set();
 
     rays.forEach(r => {
         if (!Number.isFinite(r.camera_lat) || !Number.isFinite(r.dx) || !Number.isFinite(r.tri_lat)) return;
 
+        const rayKey = `${r.device_id}__${r.object_id}`;
+        const dotKey = `${r.tri_lat.toFixed(6)},${r.tri_lon.toFixed(6)}`;
+        seenRays.add(rayKey);
+        seenDots.add(dotKey);
+
         const colour = deviceColour(r.device_id);
 
-        // Distance from camera to triangulated point (2D flat-earth).
         const refLatRad = r.camera_lat * Math.PI / 180;
         const mPerDegLon = _METERS_PER_DEG_LAT * Math.cos(refLatRad);
         const dLat = (r.tri_lat - r.camera_lat) * _METERS_PER_DEG_LAT;
         const dLon = (r.tri_lon - r.camera_lon) * mPerDegLon;
         const distToTri = Math.sqrt(dLat * dLat + dLon * dLon);
-
-        // Extend ray 50 % past the intersection so lines visibly cross.
         const rayLen = Math.max(distToTri * 1.5, 150);
         const rayEnd = _rayEndpoint(r.camera_lat, r.camera_lon, r.dx, r.dy, rayLen);
+        const latlngs = [[r.camera_lat, r.camera_lon], rayEnd];
 
-        const line = L.polyline(
-            [[r.camera_lat, r.camera_lon], rayEnd],
-            { color: colour, weight: 1.5, opacity: 0.6, dashArray: '5 4' }
-        ).addTo(map);
-        rayLines.push(line);
+        if (rayLayers[rayKey]) {
+            rayLayers[rayKey].setLatLngs(latlngs);
+        } else {
+            rayLayers[rayKey] = L.polyline(latlngs, {
+                color: colour, weight: 1.5, opacity: 0.55, dashArray: '6 4',
+            }).addTo(map);
+        }
 
-        // One intersection dot per unique tri position (shared by both rays).
-        const key = `${r.tri_lat.toFixed(6)},${r.tri_lon.toFixed(6)}`;
-        if (!intersections[key]) {
-            intersections[key] = { lat: r.tri_lat, lon: r.tri_lon, alt: r.tri_alt_m };
+        if (!dotLayers[dotKey]) {
+            dotLayers[dotKey] = L.circleMarker([r.tri_lat, r.tri_lon], {
+                radius: 5,
+                color: 'rgba(255,255,255,0.6)',
+                fillColor: '#4f7fe4',
+                fillOpacity: 1,
+                weight: 1.5,
+            }).bindTooltip(
+                `${r.object_id}<br>${fmt(r.tri_lat, 5)}, ${fmt(r.tri_lon, 5)}${r.tri_alt_m != null ? '<br>alt: ' + r.tri_alt_m.toFixed(1) + 'm' : ''}`,
+                { sticky: true, className: 'ray-tooltip' }
+            ).addTo(map);
+        } else {
+            dotLayers[dotKey].setLatLng([r.tri_lat, r.tri_lon]);
         }
     });
 
-    // Draw intersection markers on top.
-    Object.values(intersections).forEach(pt => {
-        const dot = L.circleMarker([pt.lat, pt.lon], {
-            radius: 5,
-            color: '#ffffff',
-            fillColor: '#00ffcc',
-            fillOpacity: 0.9,
-            weight: 1.5,
-        }).bindTooltip(
-            `intersection<br>${fmt(pt.lat, 5)}, ${fmt(pt.lon, 5)}<br>alt: ${pt.alt != null ? pt.alt.toFixed(1) + 'm' : '—'}`,
-            { sticky: true, className: 'ray-tooltip' }
-        ).addTo(map);
-        rayLines.push(dot);
+    Object.keys(rayLayers).forEach(k => {
+        if (!seenRays.has(k)) { map.removeLayer(rayLayers[k]); delete rayLayers[k]; }
+    });
+    Object.keys(dotLayers).forEach(k => {
+        if (!seenDots.has(k)) { map.removeLayer(dotLayers[k]); delete dotLayers[k]; }
     });
 }
 
@@ -226,7 +228,7 @@ async function loadCameras() {
                 // Coloured camera icon matching its ray colour
                 const icon = L.divIcon({
                     className: '',
-                    html: `<div style="width:10px;height:10px;border-radius:50%;background:${colour};border:2px solid #fff;box-shadow:0 0 6px ${colour}"></div>`,
+                    html: `<div style="width:10px;height:10px;border-radius:50%;background:${colour};border:2px solid rgba(255,255,255,0.5);"></div>`,
                     iconSize: [10, 10],
                     iconAnchor: [5, 5],
                 });
@@ -338,7 +340,7 @@ async function updateTracks() {
                 .addTo(map)
                 .bindPopup(`<b>${t.object_id}</b>`);
             velocityLines[t.object_id] = L.polyline([pos, futurePos], {
-                color: '#00ffcc', weight: 1.5, opacity: 0.4,
+                color: '#4f7fe4', weight: 1.5, opacity: 0.35,
             }).addTo(map);
         } else {
             objectMarkers[t.object_id].setLatLng(pos);

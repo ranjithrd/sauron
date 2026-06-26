@@ -28,6 +28,11 @@ camera_ntp_loop_file: ""
 # All agents with the same setting remain frame-synchronised.
 camera_ntp_loop_reverse: false
 
+# Playback speed multiplier for ntp_loop.
+# 1.0 = normal speed, 0.1 = 10x slower, 2.0 = 2x faster.
+# All agents with the same value stay frame-synchronised.
+camera_ntp_loop_speed: 1.0
+
 # Desired capture resolution as "WIDTHxHEIGHT". The actual resolution
 # may differ depending on what the device supports.
 camera_dimensions: "640x480"

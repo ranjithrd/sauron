@@ -437,11 +437,12 @@ class NTPLoopCamera(CameraSource):
     All frames are preloaded into RAM at start() to avoid seek latency.
     """
 
-    def __init__(self, filepath: str, width: int, height: int, reverse: bool = False) -> None:
+    def __init__(self, filepath: str, width: int, height: int, reverse: bool = False, speed: float = 1.0) -> None:
         self._filepath = filepath
         self._width = width
         self._height = height
         self._reverse = reverse
+        self._speed = max(speed, 0.01)  # clamp to avoid divide-by-zero
         self._frames: list = []
         self._fps: float = 25.0
         self._duration_s: float = 0.0
@@ -474,12 +475,16 @@ class NTPLoopCamera(CameraSource):
         duration_s = total_frames / fps if fps > 0 else 0.0
 
         if duration_s > 0:
-            remainder = 60.0 % duration_s
+            effective_period = duration_s / self._speed
+            remainder = 60.0 % effective_period
             if remainder > 0.1:
                 logger.warning(
-                    "NTPLoopCamera: video duration %.2fs does not divide 60s "
-                    "(remainder %.2fs) — loops will not realign at minute boundaries",
+                    "NTPLoopCamera: effective loop period %.2fs (video %.2fs / speed %.2f) "
+                    "does not divide 60s (remainder %.2fs) — loops will not realign at "
+                    "minute boundaries",
+                    effective_period,
                     duration_s,
+                    self._speed,
                     remainder,
                 )
 
@@ -506,6 +511,11 @@ class NTPLoopCamera(CameraSource):
         self._alive = True
 
         mem_mb = (self._width * self._height * 3 * self._total) / (1024 * 1024)
+        flags = []
+        if self._reverse:
+            flags.append("REVERSED")
+        if self._speed != 1.0:
+            flags.append(f"speed={self._speed:.2f}x")
         logger.info(
             "NTPLoopCamera: loaded %d frames (%.2fs @ %.1f fps) from %s — %.0f MB RAM%s",
             self._total,
@@ -513,7 +523,7 @@ class NTPLoopCamera(CameraSource):
             self._fps,
             self._filepath,
             mem_mb,
-            " [REVERSED]" if self._reverse else "",
+            f" [{', '.join(flags)}]" if flags else "",
         )
 
     def stop(self) -> None:
@@ -524,7 +534,7 @@ class NTPLoopCamera(CameraSource):
     def read(self) -> Optional[np.ndarray]:
         if not self._frames:
             return None
-        pos_s = time.time() % self._duration_s
+        pos_s = (time.time() * self._speed) % self._duration_s
         idx = int(pos_s * self._fps) % self._total
         return self._frames[idx].copy()
 
@@ -591,6 +601,7 @@ def make_camera(cfg) -> CameraSource:
             width=cfg.camera_width(),
             height=cfg.camera_height(),
             reverse=cfg.camera_ntp_loop_reverse,
+            speed=cfg.camera_ntp_loop_speed,
         )
 
     # Should never reach here — validator in Configuration catches this

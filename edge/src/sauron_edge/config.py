@@ -190,6 +190,12 @@ class Configuration(BaseModel):
     camera_ntp_loop_reverse: bool = False
     """When true, play the ntp_loop video in reverse. All agents with the same setting stay in sync."""
 
+    camera_ntp_loop_speed: float = 1.0
+    """
+    Playback speed multiplier for ntp_loop. 1.0 = normal, 0.1 = 10x slower, 2.0 = 2x faster.
+    All agents with the same value remain frame-synchronised.
+    """
+
     camera_dimensions: str = "640x480"
     """Frame dimensions as 'WxH'. Applied to both capture and output."""
 

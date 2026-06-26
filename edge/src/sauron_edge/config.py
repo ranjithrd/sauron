@@ -90,8 +90,24 @@ class ImageUploadConfig(BaseModel):
     s3_prefix: str = "snapshots"
     """Key prefix for uploaded objects."""
 
+    s3_region: str = ""
+    """
+    AWS region of the S3 bucket (e.g. 'ap-south-1').
+    Required when the bucket is not in us-east-1 — boto3 will fail
+    signature validation for cross-region requests without this.
+    Falls back to AWS_DEFAULT_REGION env var if empty.
+    """
+
     jpeg_quality: int = 75
     """JPEG quality 1-100."""
+
+    always_upload: bool = False
+    """
+    When true, upload a snapshot on every interval tick regardless of whether
+    objects are detected. Useful so the VLM always has a fresh frame to analyze
+    even when the scene is quiet. When false (default), only upload when the
+    stability filter reports at least one confirmed detection.
+    """
 
 
 class SensorsConfig(BaseModel):

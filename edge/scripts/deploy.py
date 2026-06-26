@@ -289,10 +289,13 @@ def _build_recipe(cfg: Dict[str, str], artifact_uri: str) -> Dict[str, Any]:
                     "aws.greengrass.ipc.mqttproxy": {
                         f"{cfg['component_name']}:mqttproxy:1": {
                             "policyDescription": (
-                                "Allow the edge component to publish telemetry to its device topic."
+                                "Allow the edge component to publish telemetry and subscribe to commands."
                             ),
-                            "operations": ["aws.greengrass#PublishToIoTCore"],
-                            "resources": ["devices/*/telemetry"],
+                            "operations": [
+                                "aws.greengrass#PublishToIoTCore",
+                                "aws.greengrass#SubscribeToIoTCore",
+                            ],
+                            "resources": ["devices/*/telemetry", "devices/all/commands"],
                         }
                     }
                 },
@@ -302,7 +305,11 @@ def _build_recipe(cfg: Dict[str, str], artifact_uri: str) -> Dict[str, Any]:
             "aws.greengrass.Nucleus": {
                 "VersionRequirement": cfg["nucleus_req"],
                 "DependencyType": "SOFT",
-            }
+            },
+            "aws.greengrass.TokenExchangeService": {
+                "VersionRequirement": ">=2.0.0",
+                "DependencyType": "HARD",
+            },
         },
         "Manifests": [
             {

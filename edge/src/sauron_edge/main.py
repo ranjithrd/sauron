@@ -205,20 +205,17 @@ def main() -> None:  # noqa: C901
     _img_bucket = cfg.image_upload.s3_bucket or _os.environ.get("AWS_S3_BUCKET", "")
     image_uploader: Optional[ImageUploader] = None
     if cfg.image_upload.enabled:
+        _img_region = cfg.image_upload.s3_region or _os.environ.get("AWS_DEFAULT_REGION", "") or _os.environ.get("AWS_REGION", "")
         image_uploader = ImageUploader(
             bucket=_img_bucket,
             prefix=cfg.image_upload.s3_prefix,
             min_interval_s=cfg.image_upload.min_interval_s,
             jpeg_quality=cfg.image_upload.jpeg_quality,
-        )
-        logger.info(
-            "ImageUploader: enabled — bucket=%s prefix=%s interval=%.1fs",
-            _img_bucket or "(not set)",
-            cfg.image_upload.s3_prefix,
-            cfg.image_upload.min_interval_s,
+            region=_img_region,
+            always_upload=cfg.image_upload.always_upload,
         )
     else:
-        logger.info("ImageUploader: disabled (image_upload.enabled=false)")
+        logger.info("ImageUploader: disabled (image_upload.enabled=false in config.yaml)")
 
     # ------------------------------------------------------------------ #
     # 4. Start subsystems

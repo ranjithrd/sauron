@@ -12,6 +12,9 @@ ComponentDependencies:
   aws.greengrass.Nucleus:
     VersionRequirement: ">=2.9.0"
     DependencyType: SOFT
+  aws.greengrass.TokenExchangeService:
+    VersionRequirement: ">=2.0.0"
+    DependencyType: HARD
 Manifests:
   - Platform:
       os: linux

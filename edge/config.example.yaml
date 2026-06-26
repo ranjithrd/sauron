@@ -99,11 +99,18 @@ detection:
 # IAM credentials come from the Greengrass component's execution role —
 # no explicit key/secret required on the device.
 image_upload:
-  enabled: false
+  enabled: true
   min_interval_s: 5.0    # upload at most once every 5 seconds
-  s3_bucket: ""          # leave empty to use AWS_S3_BUCKET env var
+  s3_bucket: "sauron-images"
   s3_prefix: snapshots
+  # AWS region of the bucket — REQUIRED if bucket is not in us-east-1.
+  # Without this, boto3 defaults to us-east-1 and cross-region requests
+  # fail with signature/auth errors.
+  s3_region: "ap-south-1"   # set to your bucket's actual region
   jpeg_quality: 75
+  # Upload every interval tick even when no objects are detected.
+  # Set true so the VLM always has a fresh frame to analyze.
+  always_upload: true
 
 # ─────────────────────────────────────
 # Hardware sensors

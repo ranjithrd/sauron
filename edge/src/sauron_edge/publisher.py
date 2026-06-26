@@ -90,6 +90,9 @@ class GreengrassPublisher:
         # Telemetry toggle — flipped by the command listener thread
         self.telemetry_enabled: bool = True
 
+        # Optional callback invoked when a set_image_upload command arrives
+        self.on_image_upload_command: Optional[object] = None  # Callable[[bool], None]
+
         self._cmd_thread: Optional[threading.Thread] = None
         self._cmd_stop: threading.Event = threading.Event()
 
@@ -303,6 +306,7 @@ class GreengrassPublisher:
                 )
 
                 publisher_ref = self  # captured in handler closure
+                stream_closed = threading.Event()
 
                 class _Handler(SubscribeToIoTCoreStreamHandler):
                     def on_stream_event(self, event) -> None:  # type: ignore[override]
@@ -311,12 +315,25 @@ class GreengrassPublisher:
                             if raw is None:
                                 return
                             msg = json.loads(raw.decode("utf-8"))
+                            logger.info(
+                                "Publisher: command received on %s — %s",
+                                _COMMANDS_TOPIC,
+                                msg,
+                            )
                             if msg.get("action") == "set_telemetry":
                                 enabled = bool(msg.get("enabled", True))
                                 publisher_ref.telemetry_enabled = enabled
                                 logger.info(
                                     "Publisher: telemetry %s via IoT command",
                                     "ENABLED" if enabled else "DISABLED",
+                                )
+                            elif msg.get("action") == "set_image_upload":
+                                enabled = bool(msg.get("enabled", False))
+                                cb = publisher_ref.on_image_upload_command
+                                if cb is not None:
+                                    cb(enabled)
+                                logger.info(
+                                    "Publisher: image upload forced=%s via IoT command", enabled
                                 )
                         except Exception as exc:
                             logger.warning(
@@ -325,12 +342,14 @@ class GreengrassPublisher:
 
                     def on_stream_error(self, error: Exception) -> bool:  # type: ignore[override]
                         logger.warning(
-                            "Publisher: command stream error — %s", error
+                            "Publisher: command stream error — %s — will reconnect", error
                         )
-                        return True  # returning True closes the stream
+                        stream_closed.set()
+                        return True  # close the stream
 
                     def on_stream_closed(self) -> None:  # type: ignore[override]
-                        logger.info("Publisher: command stream closed")
+                        logger.info("Publisher: command stream closed — will reconnect")
+                        stream_closed.set()
 
                 client = gg_ipc.connect()
                 handler = _Handler()
@@ -347,8 +366,10 @@ class GreengrassPublisher:
                     _COMMANDS_TOPIC,
                 )
 
-                # Keep this thread alive; the handler receives events asynchronously.
-                while not self._cmd_stop.is_set():
+                # Keep alive until the stream closes or we're asked to stop.
+                # stream_closed is set by on_stream_closed/on_stream_error so we
+                # reconnect instead of spinning forever on a dead subscription.
+                while not self._cmd_stop.is_set() and not stream_closed.is_set():
                     self._cmd_stop.wait(timeout=5.0)
 
             except ImportError:

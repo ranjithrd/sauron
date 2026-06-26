@@ -22,12 +22,12 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
 let cameraMarkers  = {};   // device_id → L.Marker
 let fovPolygons    = {};   // device_id → L.Polygon
 let objectMarkers  = {};   // object_id → L.Marker
-let velocityLines  = {};   // object_id → L.Polyline
 let rayLayers      = {};   // `${device_id}__${object_id}` → L.Polyline
 let dotLayers      = {};   // `${tri_lat},${tri_lon}` → L.CircleMarker
 let mapFitted      = false;
 let lastUpdateTime = null;
 let telemetryOn    = true; // mirrors server state
+const _snapshotKeyCache = {};  // deviceId → last s3_key seen
 
 const RAY_PALETTE = ['#4f7fe4', '#e4844f', '#5bc45b', '#c4a94f', '#9b72cf'];
 const deviceColours = {};
@@ -111,7 +111,7 @@ function _rayEndpoint(lat, lon, dx, dy, distanceM) {
 async function updateRays() {
     let rays;
     try {
-        const res = await fetch('/api/live_rays?within_seconds=2');
+        const res = await fetch('/api/live_rays?within_seconds=5');
         rays = await res.json();
     } catch (e) {
         return;
@@ -186,6 +186,9 @@ async function refreshSnapshot(deviceId) {
         const res = await fetch(`/api/cameras/${encodeURIComponent(deviceId)}/snapshot`);
         if (!res.ok) return;
         const data = await res.json();
+        // Only reload image if the S3 key changed — avoids constant flicker
+        if (!data.s3_key || data.s3_key === _snapshotKeyCache[deviceId]) return;
+        _snapshotKeyCache[deviceId] = data.s3_key;
         const safeId = deviceId.replace(/[^a-zA-Z0-9_-]/g, '_');
         const wrap = document.getElementById(`snap-wrap-${safeId}`);
         const img  = document.getElementById(`snap-img-${safeId}`);
@@ -360,9 +363,6 @@ async function updateTracks() {
     tracks.forEach(t => {
         seenIds.add(t.object_id);
         const pos       = [t.lat, t.lon];
-        const futurePos = [t.lat + (t.vel_lat||0) * 2, t.lon + (t.vel_lon||0) * 2];
-        const spd       = parseFloat(speedMs(t.vel_lat, t.vel_lon));
-        const spdClass  = spd > 3 ? 'fast' : '';
         const sources   = Array.isArray(t.source_cameras) ? t.source_cameras.join(', ') : '—';
         const trackTime = t.time ? relTime(t.time) : '—';
         const alt       = t.altitude_m != null ? t.altitude_m.toFixed(1) + 'm' : '—';
@@ -372,18 +372,13 @@ async function updateTracks() {
             objectMarkers[t.object_id] = L.marker(pos, { icon })
                 .addTo(map)
                 .bindPopup(`<b>${t.object_id}</b>`);
-            velocityLines[t.object_id] = L.polyline([pos, futurePos], {
-                color: '#4f7fe4', weight: 1.5, opacity: 0.35,
-            }).addTo(map);
         } else {
             objectMarkers[t.object_id].setLatLng(pos);
-            velocityLines[t.object_id].setLatLngs([pos, futurePos]);
         }
         objectMarkers[t.object_id].getPopup().setContent(
             `<b>${t.object_id}</b><br>` +
             `${fmt(t.lat, 6)}, ${fmt(t.lon, 6)}<br>` +
             `Alt: ${alt}<br>` +
-            `Speed: ${spd} m/s<br>` +
             `Sources: ${sources}`
         );
 
@@ -392,22 +387,17 @@ async function updateTracks() {
             <div class="track-id">${t.object_id}</div>
             <div class="track-pos">${fmt(t.lat, 6)}, ${fmt(t.lon, 6)}</div>
             <div class="track-alt">Alt: ${alt}</div>
-            <span class="speed-tag ${spdClass}">${spd} m/s</span>
             <div class="track-detail-grid">
-                <div class="kv"><span class="k">vel lat</span><span class="v">${fmt(t.vel_lat, 6)}</span></div>
-                <div class="kv"><span class="k">vel lon</span><span class="v">${fmt(t.vel_lon, 6)}</span></div>
                 <div class="kv"><span class="k">updated</span><span class="v">${trackTime}</span></div>
+                <div class="kv"><span class="k">sources</span><span class="v">${sources}</span></div>
             </div>
-            <div class="track-sources">Sources: ${sources}</div>
         </div>`;
     });
 
     Object.keys(objectMarkers).forEach(id => {
         if (!seenIds.has(id)) {
             map.removeLayer(objectMarkers[id]);
-            map.removeLayer(velocityLines[id]);
             delete objectMarkers[id];
-            delete velocityLines[id];
         }
     });
 
@@ -541,8 +531,8 @@ updateTracks();
 updateRays();
 loadVLMStatus();
 
-setInterval(updateTracks,  500);
-setInterval(updateRays,    500);
-setInterval(loadCameras,  5_000);
-setInterval(loadStats,    5_000);
+setInterval(updateTracks,  2_000);
+setInterval(updateRays,    1_000);
+setInterval(loadCameras,  15_000);
+setInterval(loadStats,    10_000);
 setInterval(loadVLMStatus, 60_000);

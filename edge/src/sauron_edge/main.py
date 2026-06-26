@@ -243,6 +243,10 @@ def main() -> None:  # noqa: C901
             "If running outside Greengrass, this is expected."
         )
 
+    # Wire image-upload remote command callback before starting listener
+    if image_uploader is not None:
+        publisher.on_image_upload_command = image_uploader.set_always_upload
+
     # Start command listener for telemetry toggle (non-fatal if Greengrass unavailable)
     publisher.start_command_listener()
 

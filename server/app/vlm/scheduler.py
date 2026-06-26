@@ -24,9 +24,12 @@ class VLMScheduler:
         self._last_device_id: Optional[str] = None
         self._last_s3_key: Optional[str] = None
         self._last_error: Optional[str] = None
+        self._run_now: asyncio.Event = asyncio.Event()
 
     def toggle(self, enabled: bool) -> None:
         self.enabled = enabled
+        if enabled:
+            self._run_now.set()  # fire immediately instead of waiting the full interval
         logger.info("VLMScheduler: %s", "enabled" if enabled else "disabled")
 
     def status(self) -> Dict[str, Any]:
@@ -51,7 +54,11 @@ class VLMScheduler:
 
         while True:
             interval = max(60, settings.VLM_INTERVAL_S)
-            await asyncio.sleep(interval)
+            try:
+                await asyncio.wait_for(self._run_now.wait(), timeout=float(interval))
+            except asyncio.TimeoutError:
+                pass
+            self._run_now.clear()
 
             if not self.enabled:
                 continue

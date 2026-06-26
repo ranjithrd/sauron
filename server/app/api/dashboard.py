@@ -175,6 +175,18 @@ async def api_vlm_toggle(body: ToggleBody, request: Request) -> JSONResponse:
     if scheduler is None:
         raise HTTPException(status_code=503, detail="VLM scheduler not initialised")
     scheduler.toggle(body.enabled)
+
+    # Tell edges to force-upload snapshots when VLM is on
+    mqtt_client = getattr(request.app.state, "mqtt_client", None)
+    if mqtt_client is not None:
+        try:
+            await mqtt_client.publish(
+                "devices/all/commands",
+                {"action": "set_image_upload", "enabled": body.enabled},
+            )
+        except Exception as exc:
+            logger.warning("VLM toggle: image_upload command publish failed: %s", exc)
+
     return JSONResponse(content={"enabled": body.enabled})
 
 

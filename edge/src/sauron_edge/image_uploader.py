@@ -87,6 +87,10 @@ class ImageUploader:
                     "If your bucket is in another region set image_upload.s3_region in config.yaml."
                 )
 
+    def set_always_upload(self, value: bool) -> None:
+        self._always_upload = value
+        logger.info("ImageUploader: always_upload set to %s via remote command", value)
+
     def _get_client(self):
         if self._client is None:
             import boto3  # type: ignore[import]

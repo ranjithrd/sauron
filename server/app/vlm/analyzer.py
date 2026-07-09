@@ -52,8 +52,14 @@ Return ONLY the JSON object.
 
 def _download_s3_image(bucket: str, key: str, region: str) -> bytes:
     import boto3  # type: ignore[import]
+    from app.config import settings
 
-    kwargs: dict = {"region_name": region} if region else {}
+    kwargs: dict = {}
+    if region:
+        kwargs["region_name"] = region
+    if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+        kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
+        kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
     s3 = boto3.client("s3", **kwargs)
     buf = io.BytesIO()
     s3.download_fileobj(bucket, key, buf)

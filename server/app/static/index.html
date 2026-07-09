@@ -29,8 +29,19 @@
             overflow: hidden;
         }
 
-        #map-container { flex: 1; position: relative; }
+        #map-container { flex: 1; position: relative; min-width: 0; }
         #map { width: 100%; height: 100%; background: #0d111a; }
+
+        /* Right column */
+        #right-col {
+            width: 320px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            background: #111622;
+            border-left: 1px solid rgba(255,255,255,0.07);
+            overflow: hidden;
+        }
 
         /* Sidebar header */
         #sidebar-header {
@@ -75,36 +86,6 @@
         .stat-badge .value.warn { color: #c9920a; }
         .stat-badge .value.ok   { color: #3fb950; }
         .stat-badge .value.err  { color: #e5534b; }
-
-        /* Control buttons in header */
-        .ctrl-row {
-            display: flex;
-            gap: 8px;
-            margin-top: 10px;
-        }
-
-        .ctrl-btn {
-            flex: 1;
-            padding: 5px 8px;
-            border-radius: 4px;
-            font-size: 0.65rem;
-            font-weight: 500;
-            cursor: pointer;
-            border: 1px solid rgba(255,255,255,0.1);
-            background: rgba(255,255,255,0.04);
-            color: #7a8899;
-            transition: background 0.15s, color 0.15s;
-        }
-
-        .ctrl-btn:hover { background: rgba(255,255,255,0.08); color: #e2e5eb; }
-
-        .ctrl-btn.danger        { border-color: rgba(229,83,75,0.3); color: #e5534b; }
-        .ctrl-btn.danger:hover  { background: rgba(229,83,75,0.12); }
-        .ctrl-btn.danger.active { background: rgba(229,83,75,0.2); color: #e5534b; border-color: rgba(229,83,75,0.5); }
-
-        .ctrl-btn.success        { border-color: rgba(63,185,80,0.3); color: #3fb950; }
-        .ctrl-btn.success:hover  { background: rgba(63,185,80,0.12); }
-        .ctrl-btn.success.active { background: rgba(63,185,80,0.2); color: #3fb950; border-color: rgba(63,185,80,0.5); }
 
         /* Sidebar scrollable body */
         #sidebar-body { flex: 1; overflow-y: auto; }
@@ -253,70 +234,102 @@
             margin-top: 5px;
         }
 
-/* VLM panel */
-        #vlm-panel {
-            padding: 12px 16px;
-            border-bottom: 1px solid rgba(255,255,255,0.04);
-        }
-
-        .vlm-fields {
-            margin-top: 8px;
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-
-        .vlm-field {
-            display: flex;
-            align-items: flex-start;
-            gap: 6px;
-        }
-
-        .vlm-field-key {
-            font-size: 0.6rem;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: #3a4458;
-            width: 52px;
-            flex-shrink: 0;
-            padding-top: 1px;
-        }
-
-        .vlm-field-val {
-            font-size: 0.72rem;
-            color: #7a8899;
-            word-break: break-word;
-            flex: 1;
-        }
-
-        .vlm-field-val.drone-yes { color: #e5534b; font-weight: 600; }
-        .vlm-field-val.drone-no  { color: #3fb950; }
-
-        #vlm-result {
-            font-size: 0.7rem;
-            color: #7a8899;
-            margin-top: 8px;
-            line-height: 1.5;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-
-        #vlm-meta {
+        /* Footer */
+        #sidebar-footer {
+            padding: 7px 16px;
+            border-top: 1px solid rgba(255,255,255,0.05);
             font-size: 0.6rem;
             color: #2a3348;
-            margin-top: 4px;
+            flex-shrink: 0;
+            display: flex;
+            justify-content: space-between;
         }
 
-        .vlm-toggle-row {
+        .empty-state {
+            padding: 24px 16px;
+            font-size: 0.72rem;
+            color: #2a3348;
+            text-align: center;
+        }
+
+        /* Map overlays */
+        .object-marker {
+            background: #e2e5eb;
+            border-radius: 50%;
+            border: 2px solid #4f7fe4;
+        }
+
+        .leaflet-tooltip.ray-tooltip {
+            background: #111622;
+            border: 1px solid rgba(255,255,255,0.1);
+            color: #7a8899;
+            font-family: system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+            font-size: 0.68rem;
+            padding: 5px 8px;
+            border-radius: 3px;
+            box-shadow: none;
+        }
+
+        /* ── Right column ─────────────────────────────────── */
+
+        /* Tab bar */
+        .tab-bar {
+            display: flex;
+            border-bottom: 1px solid rgba(255,255,255,0.07);
+            flex-shrink: 0;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 10px 0;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: #3a4458;
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: color 0.15s, border-color 0.15s;
+        }
+
+        .tab-btn:hover { color: #7a8899; }
+
+        .tab-btn.active {
+            color: #e2e5eb;
+            border-bottom-color: #4f7fe4;
+        }
+
+        .tab-pane { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+        .tab-pane.active { display: flex; }
+
+        /* VLM tab */
+        #vlm-pane {
+            overflow-y: auto;
+            padding: 12px 14px;
+            gap: 10px;
+        }
+
+        #vlm-pane::-webkit-scrollbar { width: 3px; }
+        #vlm-pane::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+        .vlm-header-row {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: 6px;
+            margin-bottom: 10px;
         }
 
         .vlm-label {
-            font-size: 0.7rem;
+            font-size: 0.68rem;
             color: #5a6680;
+        }
+
+        .vlm-deadman-badge {
+            font-size: 0.58rem;
+            color: #3a4458;
+            font-variant-numeric: tabular-nums;
         }
 
         /* Toggle switch */
@@ -353,40 +366,168 @@
         .toggle-switch input:checked + .toggle-track { background: #1a3a2a; border-color: rgba(63,185,80,0.3); }
         .toggle-switch input:checked + .toggle-track::after { transform: translateX(16px); background: #3fb950; }
 
-        /* Footer */
-        #sidebar-footer {
-            padding: 7px 16px;
-            border-top: 1px solid rgba(255,255,255,0.05);
-            font-size: 0.6rem;
-            color: #2a3348;
-            flex-shrink: 0;
-            display: flex;
-            justify-content: space-between;
+        /* VLM inference cards */
+        .vlm-card {
+            background: #0d111a;
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 5px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
         }
 
-        .empty-state {
+        .vlm-card.is-current {
+            border-color: rgba(79,127,228,0.3);
+        }
+
+        .vlm-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .vlm-card-badge {
+            font-size: 0.58rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: rgba(79,127,228,0.15);
+            color: #4f7fe4;
+        }
+
+        .vlm-card-badge.past {
+            background: rgba(255,255,255,0.04);
+            color: #3a4458;
+        }
+
+        .vlm-card-time {
+            font-size: 0.58rem;
+            color: #2a3348;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .vlm-fields {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .vlm-field {
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+        }
+
+        .vlm-field-key {
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #3a4458;
+            width: 52px;
+            flex-shrink: 0;
+            padding-top: 1px;
+        }
+
+        .vlm-field-val {
+            font-size: 0.72rem;
+            color: #7a8899;
+            word-break: break-word;
+            flex: 1;
+        }
+
+        .vlm-field-val.drone-yes { color: #e5534b; font-weight: 600; }
+        .vlm-field-val.drone-no  { color: #3fb950; }
+
+        .vlm-card-error {
+            font-size: 0.68rem;
+            color: #e5534b;
+            word-break: break-word;
+        }
+
+        .vlm-card-meta {
+            font-size: 0.58rem;
+            color: #2a3348;
+            margin-top: 6px;
+        }
+
+        #vlm-empty {
+            font-size: 0.72rem;
+            color: #2a3348;
+            text-align: center;
+            padding: 20px 0;
+        }
+
+        /* Message log tab */
+        #log-pane {
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        #log-pane::-webkit-scrollbar { width: 3px; }
+        #log-pane::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+        .msg-row {
+            padding: 8px 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            cursor: pointer;
+        }
+
+        .msg-row:hover { background: rgba(255,255,255,0.02); }
+
+        .msg-row-header {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+        }
+
+        .msg-ts {
+            font-size: 0.58rem;
+            color: #3a4458;
+            font-variant-numeric: tabular-nums;
+            flex-shrink: 0;
+        }
+
+        .msg-device {
+            font-size: 0.65rem;
+            color: #5a6680;
+            font-weight: 600;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .msg-topic {
+            font-size: 0.58rem;
+            color: #2a3348;
+            margin-top: 2px;
+            word-break: break-all;
+        }
+
+        .msg-payload {
+            display: none;
+            margin-top: 6px;
+            background: #0d111a;
+            border-radius: 3px;
+            padding: 6px 8px;
+            font-size: 0.62rem;
+            color: #5a6680;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 180px;
+            overflow-y: auto;
+            font-family: "SF Mono", "Fira Code", monospace;
+        }
+
+        .msg-row.expanded .msg-payload { display: block; }
+
+        #log-empty {
             padding: 24px 16px;
             font-size: 0.72rem;
             color: #2a3348;
             text-align: center;
-        }
-
-        /* Map overlays */
-        .object-marker {
-            background: #e2e5eb;
-            border-radius: 50%;
-            border: 2px solid #4f7fe4;
-        }
-
-        .leaflet-tooltip.ray-tooltip {
-            background: #111622;
-            border: 1px solid rgba(255,255,255,0.1);
-            color: #7a8899;
-            font-family: system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
-            font-size: 0.68rem;
-            padding: 5px 8px;
-            border-radius: 3px;
-            box-shadow: none;
         }
     </style>
 </head>
@@ -394,7 +535,7 @@
 
 <div id="app">
 
-    <!-- ── Sidebar ── -->
+    <!-- ── Left Sidebar ── -->
     <div id="sidebar">
         <div id="sidebar-header">
             <div class="header-top">
@@ -414,11 +555,6 @@
                     <span class="value" id="stat-updated" style="font-size:0.75rem">—</span>
                 </div>
             </div>
-            <div class="ctrl-row">
-                <button class="ctrl-btn danger" id="btn-telemetry" onclick="onTelemetryBtn()">
-                    Pause IoT
-                </button>
-            </div>
         </div>
 
         <div id="sidebar-body">
@@ -434,36 +570,10 @@
             <div id="tracks-container">
                 <div class="empty-state">Waiting for data…</div>
             </div>
-
-            <div class="section-header">VLM Analysis</div>
-            <div id="vlm-panel">
-                <div class="vlm-toggle-row">
-                    <span class="vlm-label">Auto-analyze snapshots</span>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="vlm-toggle" onchange="onVLMToggle(this.checked)">
-                        <span class="toggle-track"></span>
-                    </label>
-                </div>
-                <div class="vlm-fields" id="vlm-fields" style="display:none">
-                    <div class="vlm-field">
-                        <span class="vlm-field-key">Drone?</span>
-                        <span class="vlm-field-val" id="vlm-is-drone">—</span>
-                    </div>
-                    <div class="vlm-field">
-                        <span class="vlm-field-key">Type</span>
-                        <span class="vlm-field-val" id="vlm-drone-type">—</span>
-                    </div>
-                    <div class="vlm-field">
-                        <span class="vlm-field-key">Action</span>
-                        <span class="vlm-field-val" id="vlm-action">—</span>
-                    </div>
-                </div>
-                <div id="vlm-meta"></div>
-            </div>
         </div>
 
         <div id="sidebar-footer">
-            <span>poll 500ms</span>
+            <span>poll 1-2s</span>
             <span id="footer-time">—</span>
         </div>
     </div>
@@ -471,6 +581,37 @@
     <!-- ── Map ── -->
     <div id="map-container">
         <div id="map"></div>
+    </div>
+
+    <!-- ── Right Column ── -->
+    <div id="right-col">
+        <div class="tab-bar">
+            <button class="tab-btn active" onclick="switchTab('vlm')">VLM</button>
+            <button class="tab-btn" onclick="switchTab('log')">Messages</button>
+        </div>
+
+        <!-- VLM Pane -->
+        <div class="tab-pane active" id="vlm-pane">
+            <div class="vlm-header-row">
+                <span class="vlm-label">Auto-analyze snapshots</span>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span class="vlm-deadman-badge" id="vlm-ttl"></span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="vlm-toggle" onchange="onVLMToggle(this.checked)">
+                        <span class="toggle-track"></span>
+                    </label>
+                </div>
+            </div>
+            <div id="vlm-history"></div>
+            <div id="vlm-empty">No analyses yet</div>
+        </div>
+
+        <!-- Message Log Pane -->
+        <div class="tab-pane" id="log-pane">
+            <div id="log-container">
+                <div id="log-empty">Waiting for messages…</div>
+            </div>
+        </div>
     </div>
 
 </div>

@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import socket
-import threading
 import time
 from typing import Optional
 
@@ -33,8 +32,6 @@ _PUBLISH_TIMEOUT_S = 10.0
 # caps at 60 s.  Resets to the initial value on a successful connection.
 _RECONNECT_BACKOFF_INITIAL_S = 5.0
 _RECONNECT_BACKOFF_MAX_S = 60.0
-
-_COMMANDS_TOPIC = "devices/all/commands"
 
 
 def resolve_device_id() -> str:
@@ -87,15 +84,6 @@ class GreengrassPublisher:
         # Publish-level backoff — set when an UnauthorizedError is received
         self._publish_backoff_until: float = 0.0
 
-        # Telemetry toggle — flipped by the command listener thread
-        self.telemetry_enabled: bool = True
-
-        # Optional callback invoked when a set_image_upload command arrives
-        self.on_image_upload_command: Optional[object] = None  # Callable[[bool], None]
-
-        self._cmd_thread: Optional[threading.Thread] = None
-        self._cmd_stop: threading.Event = threading.Event()
-
         logger.info(
             "Publisher: initialised — device_id=%s topic=%s",
             self._device_id,
@@ -118,6 +106,16 @@ class GreengrassPublisher:
                 "Publisher: reconnect backoff active — %.1f s remaining", remaining
             )
             return False
+
+        # Close any previous (dirty/stale) connection before opening a new one —
+        # otherwise every reconnect leaks a native IPC connection/thread on both
+        # this process and the Nucleus side.
+        if self._client is not None:
+            try:
+                self._client.close()  # type: ignore[union-attr]
+            except Exception:
+                pass
+            self._client = None
 
         logger.info(
             "Publisher: connecting to Greengrass nucleus IPC... (backoff=%.1fs)",
@@ -260,129 +258,6 @@ class GreengrassPublisher:
             )
             self._connected = False
             return False
-
-    # ------------------------------------------------------------------
-    # Command listener (telemetry toggle via IoT Core MQTT)
-    # ------------------------------------------------------------------
-
-    def start_command_listener(self) -> None:
-        """Start a daemon thread that subscribes to the global commands topic."""
-        if self._cmd_thread and self._cmd_thread.is_alive():
-            return
-        self._cmd_stop.clear()
-        self._cmd_thread = threading.Thread(
-            target=self._command_listener_loop,
-            name="cmd-listener",
-            daemon=True,
-        )
-        self._cmd_thread.start()
-        logger.info("Publisher: command listener thread started (topic=%s)", _COMMANDS_TOPIC)
-
-    def stop_command_listener(self) -> None:
-        self._cmd_stop.set()
-        if self._cmd_thread:
-            self._cmd_thread.join(timeout=3.0)
-
-    def _command_listener_loop(self) -> None:
-        """
-        Subscribes to _COMMANDS_TOPIC using a Greengrass IPC stream handler.
-
-        The key fix vs. the old implementation: Greengrass IPC subscriptions are
-        streaming operations. Calling operation.get_response() only gets the
-        initial subscription-confirmed acknowledgement; it does NOT yield subsequent
-        messages. Incoming messages are delivered via the StreamHandler's
-        on_stream_event() callback. The old loop calling get_response() repeatedly
-        was therefore silently doing nothing.
-        """
-        while not self._cmd_stop.is_set():
-            try:
-                import awsiot.greengrasscoreipc as gg_ipc  # type: ignore[import]
-                from awsiot.greengrasscoreipc.client import (  # type: ignore[import]
-                    SubscribeToIoTCoreStreamHandler,
-                )
-                from awsiot.greengrasscoreipc.model import (  # type: ignore[import]
-                    QOS,
-                    SubscribeToIoTCoreRequest,
-                )
-
-                publisher_ref = self  # captured in handler closure
-                stream_closed = threading.Event()
-
-                class _Handler(SubscribeToIoTCoreStreamHandler):
-                    def on_stream_event(self, event) -> None:  # type: ignore[override]
-                        try:
-                            raw = event.message.payload
-                            if raw is None:
-                                return
-                            msg = json.loads(raw.decode("utf-8"))
-                            logger.info(
-                                "Publisher: command received on %s — %s",
-                                _COMMANDS_TOPIC,
-                                msg,
-                            )
-                            if msg.get("action") == "set_telemetry":
-                                enabled = bool(msg.get("enabled", True))
-                                publisher_ref.telemetry_enabled = enabled
-                                logger.info(
-                                    "Publisher: telemetry %s via IoT command",
-                                    "ENABLED" if enabled else "DISABLED",
-                                )
-                            elif msg.get("action") == "set_image_upload":
-                                enabled = bool(msg.get("enabled", False))
-                                cb = publisher_ref.on_image_upload_command
-                                if cb is not None:
-                                    cb(enabled)
-                                logger.info(
-                                    "Publisher: image upload forced=%s via IoT command", enabled
-                                )
-                        except Exception as exc:
-                            logger.warning(
-                                "Publisher: malformed command message: %s", exc
-                            )
-
-                    def on_stream_error(self, error: Exception) -> bool:  # type: ignore[override]
-                        logger.warning(
-                            "Publisher: command stream error — %s — will reconnect", error
-                        )
-                        stream_closed.set()
-                        return True  # close the stream
-
-                    def on_stream_closed(self) -> None:  # type: ignore[override]
-                        logger.info("Publisher: command stream closed — will reconnect")
-                        stream_closed.set()
-
-                client = gg_ipc.connect()
-                handler = _Handler()
-                request = SubscribeToIoTCoreRequest(
-                    topic_name=_COMMANDS_TOPIC,
-                    qos=QOS.AT_LEAST_ONCE,
-                )
-                operation = client.new_subscribe_to_iot_core(handler)
-                operation.activate(request)
-                # Wait for subscription confirmation (one-time, not the message stream)
-                operation.get_response().result(timeout=10.0)
-                logger.info(
-                    "Publisher: subscribed to %s — telemetry toggle ready",
-                    _COMMANDS_TOPIC,
-                )
-
-                # Keep alive until the stream closes or we're asked to stop.
-                # stream_closed is set by on_stream_closed/on_stream_error so we
-                # reconnect instead of spinning forever on a dead subscription.
-                while not self._cmd_stop.is_set() and not stream_closed.is_set():
-                    self._cmd_stop.wait(timeout=5.0)
-
-            except ImportError:
-                logger.warning(
-                    "Publisher: awsiotsdk not available — command listener disabled"
-                )
-                break
-            except Exception as exc:
-                if not self._cmd_stop.is_set():
-                    logger.warning(
-                        "Publisher: command listener error — %s. Retrying in 10 s.", exc
-                    )
-                    self._cmd_stop.wait(timeout=10.0)
 
     # ------------------------------------------------------------------
     # Diagnostics

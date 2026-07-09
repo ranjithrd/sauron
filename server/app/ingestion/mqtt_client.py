@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from app.config import settings
 from app.db.writer import upsert_camera, upsert_snapshot
+from app.ingestion import message_log
 from app.ingestion.schemas import TelemetryPayload
 
 try:
@@ -251,6 +252,13 @@ class MQTTClient:
         except IndexError:
             logger.warning("MQTTClient: malformed topic '%s'", topic)
             return
+
+        raw_dict: dict | None = None
+        try:
+            raw_dict = json.loads(payload.decode("utf-8"))
+        except Exception:
+            pass
+        message_log.record(topic=topic, device_id=device_id, payload=raw_dict)
 
         try:
             payload_model = TelemetryPayload.model_validate_json(payload.decode("utf-8"))

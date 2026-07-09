@@ -19,15 +19,18 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
 // State
 // ─────────────────────────────────────────────────────────────────────────────
 
-let cameraMarkers  = {};   // device_id → L.Marker
-let fovPolygons    = {};   // device_id → L.Polygon
-let objectMarkers  = {};   // object_id → L.Marker
-let rayLayers      = {};   // `${device_id}__${object_id}` → L.Polyline
-let dotLayers      = {};   // `${tri_lat},${tri_lon}` → L.CircleMarker
+let cameraMarkers  = {};
+let fovPolygons    = {};
+let objectMarkers  = {};
+let rayLayers      = {};
+let dotLayers      = {};
 let mapFitted      = false;
 let lastUpdateTime = null;
-let telemetryOn    = true; // mirrors server state
-const _snapshotKeyCache = {};  // deviceId → last s3_key seen
+const _snapshotKeyCache = {};
+
+// VLM deadman state (browser side)
+let _vlmEnabled       = false;
+let _vlmHeartbeatTimer = null;
 
 const RAY_PALETTE = ['#4f7fe4', '#e4844f', '#5bc45b', '#c4a94f', '#9b72cf'];
 const deviceColours = {};
@@ -39,6 +42,19 @@ function deviceColour(deviceId) {
         deviceColourIdx++;
     }
     return deviceColours[deviceId];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tab switching
+// ─────────────────────────────────────────────────────────────────────────────
+
+function switchTab(name) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => {
+        const paneId = ['vlm-pane', 'log-pane'][i];
+        const isActive = (name === 'vlm' && i === 0) || (name === 'log' && i === 1);
+        b.classList.toggle('active', isActive);
+        document.getElementById(paneId).classList.toggle('active', isActive);
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,9 +81,15 @@ function relTime(isoString) {
     return `${Math.floor(sec/3600)}h ago`;
 }
 
-function speedMs(velLat, velLon) {
-    const degPerSec = Math.sqrt((velLat||0)**2 + (velLon||0)**2);
-    return (degPerSec * 111320).toFixed(2);
+function fmtUTC(isoString) {
+    if (!isoString) return '—';
+    const d = new Date(isoString);
+    return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+}
+
+function fmtEpochRelTime(epochSec) {
+    if (!epochSec) return '—';
+    return relTime(new Date(epochSec * 1000).toISOString());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -123,9 +145,6 @@ async function updateRays() {
     rays.forEach(r => {
         if (!Number.isFinite(r.camera_lat) || !Number.isFinite(r.dx) || !Number.isFinite(r.tri_lat)) return;
 
-        // Key by device_id: one ray + one dot per camera, stable across polls.
-        // object_id in detection_rays is position-based and changes every frame,
-        // so using it as a key would cause flicker every 500 ms poll.
         const rayKey = r.device_id;
         const dotKey = r.device_id;
         seenRays.add(rayKey);
@@ -186,7 +205,6 @@ async function refreshSnapshot(deviceId) {
         const res = await fetch(`/api/cameras/${encodeURIComponent(deviceId)}/snapshot`);
         if (!res.ok) return;
         const data = await res.json();
-        // Only reload image if the S3 key changed — avoids constant flicker
         if (!data.s3_key || data.s3_key === _snapshotKeyCache[deviceId]) return;
         _snapshotKeyCache[deviceId] = data.s3_key;
         const safeId = deviceId.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -307,7 +325,7 @@ async function loadCameras() {
 
     if (data.length > 0) container.innerHTML = html;
 
-    // Refresh snapshots after DOM is updated
+    data.forEach(cam => { delete _snapshotKeyCache[cam.device_id]; });
     data.forEach(cam => refreshSnapshot(cam.device_id));
 
     Object.keys(cameraMarkers).forEach(id => {
@@ -405,61 +423,107 @@ async function updateTracks() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Telemetry toggle
+// VLM — deadman toggle + heartbeat
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function onTelemetryBtn() {
-    const next = !telemetryOn;
-    try {
-        await fetch('/api/telemetry/toggle', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: next }),
-        });
-        telemetryOn = next;
-        _updateTelemetryBtn();
-    } catch (e) {
-        console.error('Telemetry toggle failed:', e);
-    }
-}
+function onVLMToggle(checked) {
+    _vlmEnabled = checked;
 
-function _updateTelemetryBtn() {
-    const btn = document.getElementById('btn-telemetry');
-    if (!btn) return;
-    if (telemetryOn) {
-        btn.textContent = 'Pause IoT';
-        btn.classList.remove('success');
-        btn.classList.add('danger');
+    fetch('/api/vlm/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: checked }),
+    }).catch(e => console.error('VLM toggle failed:', e));
+
+    if (checked) {
+        // Immediately send first heartbeat, then every 30 s
+        _scheduleVLMHeartbeats();
     } else {
-        btn.textContent = 'Resume IoT';
-        btn.classList.remove('danger');
-        btn.classList.add('success', 'active');
+        _stopVLMHeartbeats();
     }
 }
 
-async function syncTelemetryStatus() {
+function _scheduleVLMHeartbeats() {
+    _stopVLMHeartbeats();
+    _sendHeartbeat();
+    _vlmHeartbeatTimer = setInterval(_sendHeartbeat, 30_000);
+}
+
+function _stopVLMHeartbeats() {
+    if (_vlmHeartbeatTimer !== null) {
+        clearInterval(_vlmHeartbeatTimer);
+        _vlmHeartbeatTimer = null;
+    }
+}
+
+async function _sendHeartbeat() {
+    if (!_vlmEnabled) return;
     try {
-        const res = await fetch('/api/telemetry/status');
-        const data = await res.json();
-        telemetryOn = data.enabled;
-        _updateTelemetryBtn();
+        await fetch('/api/vlm/heartbeat', { method: 'POST' });
     } catch (_) {}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VLM
+// VLM — render history cards
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function onVLMToggle(enabled) {
-    try {
-        await fetch('/api/vlm/toggle', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled }),
-        });
-    } catch (e) {
-        console.error('VLM toggle failed:', e);
+function _renderVLMCard(entry, idx) {
+    const isCurrent = idx === 0;
+    const badgeClass = isCurrent ? 'vlm-card-badge' : 'vlm-card-badge past';
+    const badgeText  = isCurrent ? 'Latest' : `#${idx + 1}`;
+    const timeStr    = entry.run_ts
+        ? fmtUTC(new Date(entry.run_ts * 1000).toISOString())
+        : '—';
+
+    let bodyHtml = '';
+
+    if (entry.error) {
+        bodyHtml = `<div class="vlm-card-error">${escHtml(entry.error.slice(0, 200))}</div>`;
+    } else if (entry.result) {
+        let parsed = null;
+        try { parsed = JSON.parse(entry.result); } catch (_) {}
+
+        if (parsed && typeof parsed === 'object') {
+            let droneVal = '—';
+            let droneClass = 'vlm-field-val';
+            if (parsed.is_drone === true)  { droneVal = 'YES'; droneClass = 'vlm-field-val drone-yes'; }
+            if (parsed.is_drone === false) { droneVal = 'NO';  droneClass = 'vlm-field-val drone-no'; }
+
+            bodyHtml = `
+            <div class="vlm-fields">
+                <div class="vlm-field">
+                    <span class="vlm-field-key">Drone?</span>
+                    <span class="${droneClass}">${droneVal}</span>
+                </div>
+                <div class="vlm-field">
+                    <span class="vlm-field-key">Type</span>
+                    <span class="vlm-field-val">${escHtml(parsed.drone_type || '—')}</span>
+                </div>
+                <div class="vlm-field">
+                    <span class="vlm-field-key">Action</span>
+                    <span class="vlm-field-val">${escHtml(parsed.action || '—')}</span>
+                </div>
+            </div>`;
+        } else {
+            bodyHtml = `<div class="vlm-field-val">${escHtml(entry.result.slice(0, 200))}</div>`;
+        }
     }
+
+    const meta = [
+        entry.device_id ? escHtml(entry.device_id) : null,
+        entry.model ? escHtml(entry.model) : null,
+        entry.duration_ms ? `${entry.duration_ms}ms` : null,
+    ].filter(Boolean).join(' · ');
+
+    return `
+    <div class="vlm-card ${isCurrent ? 'is-current' : ''}">
+        <div class="vlm-card-header">
+            <span class="${badgeClass}">${badgeText}</span>
+            <span class="vlm-card-time">${timeStr}</span>
+        </div>
+        ${bodyHtml}
+        ${meta ? `<div class="vlm-card-meta">${meta}</div>` : ''}
+    </div>`;
 }
 
 async function loadVLMStatus() {
@@ -467,72 +531,117 @@ async function loadVLMStatus() {
         const res = await fetch('/api/vlm/status');
         const s = await res.json();
 
+        // Sync toggle state with server (server is source of truth on expiry)
         const chk = document.getElementById('vlm-toggle');
-        if (chk) chk.checked = s.enabled;
-
-        const fieldsEl   = document.getElementById('vlm-fields');
-        const isDroneEl  = document.getElementById('vlm-is-drone');
-        const typeEl     = document.getElementById('vlm-drone-type');
-        const actionEl   = document.getElementById('vlm-action');
-        const metaEl     = document.getElementById('vlm-meta');
-
-        if (s.last_result) {
-            let parsed = null;
-            try { parsed = JSON.parse(s.last_result); } catch (_) {}
-
-            if (parsed && typeof parsed === 'object') {
-                if (fieldsEl) fieldsEl.style.display = 'flex';
-
-                if (isDroneEl) {
-                    if (parsed.is_drone === true) {
-                        isDroneEl.textContent = 'YES';
-                        isDroneEl.className = 'vlm-field-val drone-yes';
-                    } else if (parsed.is_drone === false) {
-                        isDroneEl.textContent = 'NO';
-                        isDroneEl.className = 'vlm-field-val drone-no';
-                    } else {
-                        isDroneEl.textContent = 'uncertain';
-                        isDroneEl.className = 'vlm-field-val';
-                    }
-                }
-                if (typeEl)   typeEl.textContent   = parsed.drone_type || '—';
-                if (actionEl) actionEl.textContent  = parsed.action     || '—';
-            } else {
-                // Fallback: raw text (shouldn't happen with new analyzer)
-                if (fieldsEl)  fieldsEl.style.display = 'none';
-                if (actionEl)  actionEl.textContent   = s.last_result;
+        if (chk) {
+            // Only update if server says it expired — don't fight user clicks
+            if (!s.enabled && _vlmEnabled) {
+                // server expired the deadman
+                _vlmEnabled = false;
+                chk.checked = false;
+                _stopVLMHeartbeats();
+            } else if (s.enabled && !chk.checked) {
+                chk.checked = true;
             }
-
-            if (metaEl) {
-                const ago = s.last_run ? relTime(new Date(s.last_run * 1000).toISOString()) : '—';
-                metaEl.textContent = `${s.model || ''} · ${ago}`;
-            }
-
-        } else if (s.last_error) {
-            if (fieldsEl)  fieldsEl.style.display = 'none';
-            if (metaEl)    metaEl.textContent = 'Error: ' + s.last_error.slice(0, 120);
-        } else {
-            if (fieldsEl)  fieldsEl.style.display = 'none';
-            if (metaEl)    metaEl.textContent = s.enabled
-                ? 'Waiting for snapshot from edge…'
-                : '';
         }
+
+        // Countdown badge
+        const ttlEl = document.getElementById('vlm-ttl');
+        if (ttlEl && s.enabled && s.enabled_until) {
+            const secsLeft = Math.max(0, Math.round(s.enabled_until - Date.now() / 1000));
+            ttlEl.textContent = `${secsLeft}s`;
+        } else if (ttlEl) {
+            ttlEl.textContent = '';
+        }
+
+        // Render history
+        const history = Array.isArray(s.history) ? s.history : [];
+        const historyEl = document.getElementById('vlm-history');
+        const emptyEl   = document.getElementById('vlm-empty');
+
+        if (history.length === 0) {
+            if (historyEl) historyEl.innerHTML = '';
+            if (emptyEl)   emptyEl.style.display = 'block';
+        } else {
+            if (emptyEl) emptyEl.style.display = 'none';
+            if (historyEl) {
+                historyEl.innerHTML = history.slice(0, 4).map((e, i) => _renderVLMCard(e, i)).join('');
+            }
+        }
+
     } catch (_) {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Message log
+// ─────────────────────────────────────────────────────────────────────────────
+
+function escHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function toggleMsgRow(el) {
+    el.classList.toggle('expanded');
+}
+
+async function loadMessages() {
+    let msgs;
+    try {
+        const res = await fetch('/api/messages?limit=30');
+        msgs = await res.json();
+    } catch (_) { return; }
+
+    const container = document.getElementById('log-container');
+    const emptyEl   = document.getElementById('log-empty');
+
+    if (!msgs || msgs.length === 0) {
+        if (emptyEl) emptyEl.style.display = 'block';
+        return;
+    }
+
+    if (emptyEl) emptyEl.style.display = 'none';
+
+    let html = '';
+    msgs.forEach(m => {
+        const ts      = fmtUTC(m.time);
+        const device  = escHtml(m.device_id || '?');
+        const topic   = escHtml(m.topic || '');
+        const payload = m.payload
+            ? escHtml(JSON.stringify(m.payload, null, 2))
+            : '(no payload)';
+
+        html += `
+        <div class="msg-row" onclick="this.classList.toggle('expanded')">
+            <div class="msg-row-header">
+                <span class="msg-ts">${ts}</span>
+                <span class="msg-device">${device}</span>
+            </div>
+            <div class="msg-topic">${topic}</div>
+            <pre class="msg-payload">${payload}</pre>
+        </div>`;
+    });
+
+    container.innerHTML = html;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Boot
 // ─────────────────────────────────────────────────────────────────────────────
 
-syncTelemetryStatus();
 loadCameras();
 loadStats();
 updateTracks();
 updateRays();
 loadVLMStatus();
+loadMessages();
 
-setInterval(updateTracks,  2_000);
-setInterval(updateRays,    1_000);
-setInterval(loadCameras,  15_000);
-setInterval(loadStats,    10_000);
-setInterval(loadVLMStatus, 60_000);
+setInterval(updateTracks,   2_000);
+setInterval(updateRays,     1_000);
+setInterval(loadCameras,   15_000);
+setInterval(loadStats,     10_000);
+setInterval(loadVLMStatus,  3_000);
+setInterval(loadMessages,   2_000);

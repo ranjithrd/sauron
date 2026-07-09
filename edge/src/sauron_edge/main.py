@@ -72,6 +72,7 @@ def _configure_logging() -> None:
     for chatty in (
         "sauron_edge.sensors",
         "sauron_edge.detection",
+        "sauron_edge.stability",
         "sauron_edge.shared_state",
         "sauron_edge.publisher",
         "sauron_edge.dashboard",
@@ -242,13 +243,6 @@ def main() -> None:  # noqa: C901
             "Greengrass IPC connection failed at startup — will retry on first publish. "
             "If running outside Greengrass, this is expected."
         )
-
-    # Wire image-upload remote command callback before starting listener
-    if image_uploader is not None:
-        publisher.on_image_upload_command = image_uploader.set_always_upload
-
-    # Start command listener for telemetry toggle (non-fatal if Greengrass unavailable)
-    publisher.start_command_listener()
 
     # ------------------------------------------------------------------ #
     # 4b. Start monitoring dashboard
@@ -494,12 +488,8 @@ def main() -> None:  # noqa: C901
             time_since_last_publish = now - last_publish_monotonic
 
             if time_since_last_publish >= publish_interval_s:
-                # Check global telemetry toggle (set via server command)
-                if not publisher.telemetry_enabled:
-                    logger.debug("Publish suppressed — telemetry disabled via command")
-                    last_publish_monotonic = now
                 # Optionally suppress MQTT message when nothing stable is detected
-                elif cfg.detection.suppress_empty_publishes and not stable_ncoords:
+                if cfg.detection.suppress_empty_publishes and not stable_ncoords:
                     logger.debug(
                         "Publish suppressed — no stable detections (suppress_empty_publishes=True)"
                     )

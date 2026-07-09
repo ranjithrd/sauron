@@ -51,7 +51,6 @@ async def lifespan(app: FastAPI):
     app.state.pipeline = pipeline
     app.state.kalman_tracker = kalman_tracker
     app.state.vlm_scheduler = vlm_scheduler
-    app.state.telemetry_enabled = True
 
     yield
 

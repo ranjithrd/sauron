@@ -125,41 +125,12 @@ async def api_get_snapshot(device_id: str) -> JSONResponse:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Telemetry toggle
+# VLM
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ToggleBody(BaseModel):
     enabled: bool
 
-
-@router.get("/telemetry/status")
-async def api_telemetry_status(request: Request) -> JSONResponse:
-    enabled = getattr(request.app.state, "telemetry_enabled", True)
-    return JSONResponse(content={"enabled": enabled})
-
-
-@router.post("/telemetry/toggle")
-async def api_telemetry_toggle(body: ToggleBody, request: Request) -> JSONResponse:
-    """Publish a command to all edge devices to enable/disable telemetry publishing."""
-    request.app.state.telemetry_enabled = body.enabled
-
-    mqtt_client = getattr(request.app.state, "mqtt_client", None)
-    if mqtt_client is not None:
-        try:
-            await mqtt_client.publish(
-                "devices/all/commands",
-                {"action": "set_telemetry", "enabled": body.enabled},
-            )
-        except Exception as exc:
-            logger.warning("Telemetry toggle publish failed: %s", exc)
-
-    logger.info("Telemetry toggle → %s", "enabled" if body.enabled else "disabled")
-    return JSONResponse(content={"enabled": body.enabled})
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# VLM
-# ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/vlm/status")
 async def api_vlm_status(request: Request) -> JSONResponse:
@@ -175,19 +146,17 @@ async def api_vlm_toggle(body: ToggleBody, request: Request) -> JSONResponse:
     if scheduler is None:
         raise HTTPException(status_code=503, detail="VLM scheduler not initialised")
     scheduler.toggle(body.enabled)
-
-    # Tell edges to force-upload snapshots when VLM is on
-    mqtt_client = getattr(request.app.state, "mqtt_client", None)
-    if mqtt_client is not None:
-        try:
-            await mqtt_client.publish(
-                "devices/all/commands",
-                {"action": "set_image_upload", "enabled": body.enabled},
-            )
-        except Exception as exc:
-            logger.warning("VLM toggle: image_upload command publish failed: %s", exc)
-
     return JSONResponse(content={"enabled": body.enabled})
+
+
+@router.post("/vlm/heartbeat")
+async def api_vlm_heartbeat(request: Request) -> JSONResponse:
+    """Extend the VLM deadman timer by 60 s."""
+    scheduler = getattr(request.app.state, "vlm_scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="VLM scheduler not initialised")
+    scheduler.heartbeat()
+    return JSONResponse(content={"enabled": scheduler.enabled})
 
 
 @router.get("/vlm/latest")
@@ -203,3 +172,10 @@ async def api_vlm_latest() -> JSONResponse:
     if row is None:
         return JSONResponse(content=None)
     return JSONResponse(content=_serialize(dict(row)))
+
+
+@router.get("/messages")
+async def api_messages(limit: int = 30) -> JSONResponse:
+    """Return the most recent MQTT messages received by the server."""
+    from app.ingestion.message_log import get_recent
+    return JSONResponse(content=get_recent(min(limit, 60)))

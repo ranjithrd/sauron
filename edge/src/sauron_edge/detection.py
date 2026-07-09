@@ -398,7 +398,7 @@ class MOG2Detector:
         )
 
         if ncoords:
-            logger.info(
+            logger.debug(
                 "MOG2Detector: %d detection(s) — raw_contours=%d rejected_area=%d fg_px=%d",
                 len(ncoords),
                 n_raw,

@@ -209,7 +209,7 @@ def step_build_zip(cfg: Dict[str, str]) -> Path:
     ]
 
     # Exclude patterns
-    exclude = {".venv", "__pycache__", ".mypy_cache", "dist", ".git", "*.pyc", "*.pyo"}
+    exclude = {".venv", "venv", "__pycache__", ".mypy_cache", "dist", ".git", "*.pyc", "*.pyo"}
 
     def _should_exclude(p: Path) -> bool:
         for part in p.parts:
@@ -218,20 +218,41 @@ def step_build_zip(cfg: Dict[str, str]) -> Path:
         return False
 
     files_added = 0
+    symlinks_skipped = 0
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for root in include_roots:
             if root.is_file():
                 arcname = root.relative_to(_EDGE_DIR)
-                zf.write(root, arcname)
+                # Resolve symlinks — Greengrass cannot chmod symlink entries in ZIPs
+                real = root.resolve()
+                if not real.is_file():
+                    print(_warn(f"    skipping broken symlink: {arcname}"))
+                    symlinks_skipped += 1
+                    continue
+                zf.write(real, arcname)
                 files_added += 1
                 print(f"    + {arcname}")
             elif root.is_dir():
                 for f in sorted(root.rglob("*")):
-                    if f.is_file() and not _should_exclude(f.relative_to(_EDGE_DIR)):
-                        arcname = f.relative_to(_EDGE_DIR)
-                        zf.write(f, arcname)
-                        files_added += 1
-                        print(f"    + {arcname}")
+                    if not f.is_file():
+                        continue
+                    rel = f.relative_to(_EDGE_DIR)
+                    if _should_exclude(rel):
+                        continue
+                    arcname = rel
+                    # Resolve symlinks so Greengrass gets real file content, not
+                    # a symlink entry it can't chmod on the target device.
+                    real = f.resolve()
+                    if not real.is_file():
+                        print(_warn(f"    skipping broken symlink: {arcname}"))
+                        symlinks_skipped += 1
+                        continue
+                    zf.write(real, arcname)
+                    files_added += 1
+                    print(f"    + {arcname}")
+
+    if symlinks_skipped:
+        print(_warn(f"  {symlinks_skipped} symlink(s) skipped (resolved to real files above)"))
 
     size_kb = zip_path.stat().st_size // 1024
     print(_ok(f"Built {zip_name} — {files_added} files, {size_kb} KB"))
@@ -289,13 +310,12 @@ def _build_recipe(cfg: Dict[str, str], artifact_uri: str) -> Dict[str, Any]:
                     "aws.greengrass.ipc.mqttproxy": {
                         f"{cfg['component_name']}:mqttproxy:1": {
                             "policyDescription": (
-                                "Allow the edge component to publish telemetry and subscribe to commands."
+                                "Allow the edge component to publish telemetry."
                             ),
                             "operations": [
                                 "aws.greengrass#PublishToIoTCore",
-                                "aws.greengrass#SubscribeToIoTCore",
                             ],
-                            "resources": ["devices/*/telemetry", "devices/all/commands"],
+                            "resources": ["devices/*/telemetry"],
                         }
                     }
                 },

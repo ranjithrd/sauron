@@ -569,6 +569,20 @@ async function loadVLMStatus() {
             }
         }
 
+        // Summary — updated by scheduler after each VLM run, just read it here
+        const summaryBody = document.getElementById('summary-body');
+        const summaryMeta = document.getElementById('summary-meta');
+        if (summaryBody) {
+            if (s.summary) {
+                summaryBody.innerHTML = escHtml(s.summary);
+                if (summaryMeta && s.summary_ts) {
+                    summaryMeta.textContent = fmtUTC(new Date(s.summary_ts * 1000).toISOString());
+                }
+            } else if (!s.enabled) {
+                summaryBody.innerHTML = '<span class="summary-placeholder">Enable VLM to generate</span>';
+            }
+        }
+
     } catch (_) {}
 }
 
@@ -629,45 +643,6 @@ async function loadMessages() {
 
     container.innerHTML = html;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Situation summary
-// ─────────────────────────────────────────────────────────────────────────────
-
-let _lastSummaryTs = 0;
-
-async function refreshSummary(force = false) {
-    const btn    = document.getElementById('summary-btn');
-    const body   = document.getElementById('summary-body');
-    const meta   = document.getElementById('summary-meta');
-
-    if (btn) { btn.disabled = true; btn.textContent = '…'; }
-
-    try {
-        const url = force ? '/api/summary?force=true' : '/api/summary';
-        const res = await fetch(url);
-        const s   = await res.json();
-
-        if (s.result) {
-            body.innerHTML = escHtml(s.result);
-            _lastSummaryTs = s.ts;
-            const dur = s.duration_ms ? ` · ${s.duration_ms}ms` : '';
-            meta.textContent = s.ts
-                ? `${fmtUTC(new Date(s.ts * 1000).toISOString())}${dur}`
-                : '';
-        } else if (s.error) {
-            body.innerHTML = `<span class="summary-error">${escHtml(s.error)}</span>`;
-            meta.textContent = '';
-        }
-    } catch (e) {
-        if (body) body.innerHTML = `<span class="summary-error">Request failed</span>`;
-    } finally {
-        if (btn) { btn.disabled = false; btn.textContent = 'Refresh'; }
-    }
-}
-
-// Auto-refresh summary every 60 s (uses cache on server side, not wasteful)
-setInterval(() => refreshSummary(false), 60_000);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Boot

@@ -27,8 +27,10 @@ class VLMScheduler:
     def __init__(self) -> None:
         self._enabled_until: float = 0.0
         self._history: deque[Dict[str, Any]] = deque(maxlen=_HISTORY_SIZE)
-        self._last_run_ts: float = 0.0       # epoch of last completed run
-        self._run_immediately: bool = False   # fire next iteration instead of waiting
+        self._last_run_ts: float = 0.0
+        self._run_immediately: bool = False
+        self._last_summary: Optional[str] = None
+        self._last_summary_ts: float = 0.0
 
     # ── public interface ──────────────────────────────────────────────────────
 
@@ -65,6 +67,8 @@ class VLMScheduler:
             "last_s3_key": last["s3_key"] if last else None,
             "last_error": last["error"] if last else None,
             "history": history,
+            "summary": self._last_summary,
+            "summary_ts": self._last_summary_ts or None,
         }
 
     # ── background loop ───────────────────────────────────────────────────────
@@ -88,8 +92,10 @@ class VLMScheduler:
 
     async def _run_once(self, settings: Any) -> None:
         from app.db.connection import get_pool
+        from app.db.queries import get_all_cameras, get_live_tracks
         from app.db.writer import write_vlm_result
         from app.vlm.analyzer import analyze_snapshot
+        from app.vlm.summarizer import generate_summary
 
         run_ts = time.time()
         self._last_run_ts = run_ts
@@ -182,6 +188,24 @@ class VLMScheduler:
                 )
             except Exception as exc:
                 logger.warning("VLMScheduler: DB write failed: %s", exc)
+
+            # ── text summary (piggybacks on same enable/cycle) ────────────────
+            try:
+                tracks  = await get_live_tracks(within_seconds=30)
+                cameras = await get_all_cameras()
+                summary_data = await generate_summary(
+                    tracks=tracks,
+                    cameras=cameras,
+                    vlm_history=list(self._history),
+                    model=settings.SUMMARY_MODEL,
+                    api_key=settings.VLM_API_KEY,
+                    force=True,
+                )
+                if summary_data.get("result"):
+                    self._last_summary    = summary_data["result"]
+                    self._last_summary_ts = summary_data["ts"]
+            except Exception as exc:
+                logger.warning("VLMScheduler: summary failed: %s", exc)
 
         except Exception as exc:
             err = str(exc)

@@ -181,27 +181,3 @@ async def api_messages(limit: int = 30) -> JSONResponse:
     return JSONResponse(content=get_recent(min(limit, 60)))
 
 
-@router.get("/summary")
-async def api_summary(request: Request, force: bool = False) -> JSONResponse:
-    """Return an LLM-generated situational summary of the current tracking state."""
-    from app.config import settings
-    from app.vlm.summarizer import generate_summary, cached_summary
-
-    if not settings.VLM_API_KEY:
-        return JSONResponse(content={"result": None, "error": "VLM_API_KEY not set", "ts": 0, "duration_ms": 0})
-
-    scheduler = getattr(request.app.state, "vlm_scheduler", None)
-    vlm_history = scheduler.status().get("history", []) if scheduler else []
-
-    tracks  = _serialize(await get_live_tracks(within_seconds=30))
-    cameras = _serialize(await get_all_cameras())
-
-    result = await generate_summary(
-        tracks=tracks,
-        cameras=cameras,
-        vlm_history=vlm_history,
-        model=settings.SUMMARY_MODEL,
-        api_key=settings.VLM_API_KEY,
-        force=force,
-    )
-    return JSONResponse(content=result)

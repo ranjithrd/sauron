@@ -92,6 +92,13 @@ function fmtEpochRelTime(epochSec) {
     return relTime(new Date(epochSec * 1000).toISOString());
 }
 
+function fmtVelAlt(velAlt) {
+    if (velAlt == null || !Number.isFinite(velAlt)) return '—';
+    const ms = velAlt.toFixed(2);
+    const arrow = velAlt > 0.05 ? '↑' : velAlt < -0.05 ? '↓' : '→';
+    return `${arrow} ${Math.abs(velAlt).toFixed(2)} m/s`;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FOV cone rendering
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,17 +393,41 @@ async function updateTracks() {
         const alt       = t.altitude_m != null ? t.altitude_m.toFixed(1) + 'm' : '—';
 
         if (!objectMarkers[t.object_id]) {
-            const icon = L.divIcon({ className: 'object-marker', iconSize: [10, 10] });
+            const icon = L.divIcon({
+                className: '',
+                html: `<div class="object-marker"></div>`,
+                iconSize: [12, 12],
+                iconAnchor: [6, 6]
+            });
             objectMarkers[t.object_id] = L.marker(pos, { icon })
                 .addTo(map)
                 .bindPopup(`<b>${t.object_id}</b>`);
         } else {
             objectMarkers[t.object_id].setLatLng(pos);
         }
+
+        // Apply 3D altitude effects and vertical speed colors
+        if (objectMarkers[t.object_id]._icon) {
+            const markerDiv = objectMarkers[t.object_id]._icon.querySelector('.object-marker');
+            if (markerDiv && t.altitude_m != null) {
+                const altDisplay = Math.max(0, Math.min(200, t.altitude_m)); // scale cap
+                const scale = 1 + (altDisplay / 50); // Gets up to 5x bigger
+                const shadowY = altDisplay * 0.5; // Shadow moves down
+                const shadowBlur = altDisplay * 0.3; // Shadow blurs
+                
+                let shadowColor = 'rgba(79, 127, 228, 0.5)'; // blue default
+                if (t.vel_alt > 0.5) shadowColor = 'rgba(63, 185, 80, 0.7)'; // ascending
+                else if (t.vel_alt < -0.5) shadowColor = 'rgba(229, 83, 75, 0.7)'; // descending
+                
+                markerDiv.style.transform = `scale(${scale})`;
+                markerDiv.style.boxShadow = `0px ${shadowY}px ${shadowBlur}px ${shadowColor}`;
+            }
+        }
         objectMarkers[t.object_id].getPopup().setContent(
             `<b>${t.object_id}</b><br>` +
             `${fmt(t.lat, 6)}, ${fmt(t.lon, 6)}<br>` +
             `Alt: ${alt}<br>` +
+            `Vert: ${fmtVelAlt(t.vel_alt)}<br>` +
             `Sources: ${sources}`
         );
 
@@ -407,6 +438,7 @@ async function updateTracks() {
             <div class="track-alt">Alt: ${alt}</div>
             <div class="track-detail-grid">
                 <div class="kv"><span class="k">updated</span><span class="v">${trackTime}</span></div>
+                <div class="kv"><span class="k">vert speed</span><span class="v">${fmtVelAlt(t.vel_alt)}</span></div>
                 <div class="kv"><span class="k">sources</span><span class="v">${sources}</span></div>
             </div>
         </div>`;

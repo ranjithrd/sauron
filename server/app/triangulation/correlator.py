@@ -9,8 +9,9 @@ CorrelatedDetection events via a callback.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.config import settings
 from app.triangulation.triangulator import (
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MIN_CONFIDENCE: float = 0.15
+_METERS_PER_DEG_LAT: float = 111_320.0
 
 
 # ---------------------------------------------------------------------------
@@ -76,17 +78,26 @@ class Correlator:
     on_rays : async callable, optional
         Called with the pair of :class:`RayRecord` objects for each accepted
         triangulation.  Use this to persist rays to the database.
+    max_position_jump_m : float, optional
+        If set, triangulated positions that jump more than this many metres
+        from the last known position for the same object pair are rejected.
+        Useful for filtering outlier triangulations caused by misidentified
+        cross-camera matches.
     """
 
     def __init__(
         self,
         on_correlated: Callable[[CorrelatedDetection], Awaitable[None]],
         on_rays: Optional[Callable[[List[RayRecord]], Awaitable[None]]] = None,
+        max_position_jump_m: Optional[float] = None,
     ) -> None:
         self._on_correlated = on_correlated
         self._on_rays = on_rays
+        self._max_position_jump_m = max_position_jump_m
 
         self._buffer: List[Detection] = []
+        # object_id → (last_lat, last_lon) for position-jump filtering
+        self._last_positions: Dict[str, Tuple[float, float]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -165,6 +176,24 @@ class Correlator:
             )
             return
 
+        # Position-jump filter: reject if the triangulated position has jumped
+        # implausibly far from the last known position for this object pair.
+        if self._max_position_jump_m is not None:
+            pair_key = d1.object_id  # use first detection's object_id as key
+            last = self._last_positions.get(pair_key)
+            if last is not None:
+                jump_m = _flat_dist_m(last[0], last[1], position.lat, position.lon)
+                if jump_m > self._max_position_jump_m:
+                    logger.debug(
+                        "Correlator: rejected pair (%s, %s) — position jump %.1fm > %.1fm",
+                        d1.device_id, d2.device_id, jump_m, self._max_position_jump_m,
+                    )
+                    return
+
+        # Update last known position
+        pair_key = d1.object_id
+        self._last_positions[pair_key] = (position.lat, position.lon)
+
         logger.debug(
             "Correlator: triangulated (%s, %s) → lat=%.6f lon=%.6f alt=%.1fm conf=%.3f",
             d1.device_id, d2.device_id,
@@ -223,3 +252,12 @@ def _make_ray_record(
         tri_lon=tri_lon,
         tri_alt_m=tri_alt_m,
     )
+
+
+def _flat_dist_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Approximate horizontal distance in metres between two lat/lon points."""
+    ref_lat_rad = math.radians((lat1 + lat2) / 2.0)
+    meters_per_deg_lon = _METERS_PER_DEG_LAT * math.cos(ref_lat_rad)
+    dlat = (lat2 - lat1) * _METERS_PER_DEG_LAT
+    dlon = (lon2 - lon1) * meters_per_deg_lon
+    return math.sqrt(dlat ** 2 + dlon ** 2)

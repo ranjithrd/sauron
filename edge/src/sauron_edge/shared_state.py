@@ -85,7 +85,18 @@ class ComponentHealth:
     """True if the sensor reader thread is running."""
 
     gps_locked: bool = False
-    """True if GPS has a valid satellite fix."""
+    """True if GPS has a valid satellite fix (effective value — see gps_override_active)."""
+
+    gps_override_active: bool = False
+    """True if this device publishes a fixed override position instead of the real GPS."""
+
+    gps_actual_locked: bool = False
+    """True if the real GPS module has a satellite fix, regardless of override."""
+
+    gps_actual_lat: float = 0.0
+    gps_actual_lon: float = 0.0
+    gps_actual_sats: int = 0
+    """Real GPS reading — always the ground truth, never masked by an override."""
 
     imu_calibrated: bool = False
     """True if BNO055 system calibration level >= 1."""
@@ -223,12 +234,22 @@ class SharedState:
         camera_w: int = 0,
         camera_h: int = 0,
         cpu_temp_c: float = 0.0,
+        gps_override_active: bool = False,
+        gps_actual_locked: bool = False,
+        gps_actual_lat: float = 0.0,
+        gps_actual_lon: float = 0.0,
+        gps_actual_sats: int = 0,
     ) -> None:
         with self._lock:
             self._health = ComponentHealth(
                 camera_alive=camera_alive,
                 sensor_thread_alive=sensor_thread_alive,
                 gps_locked=gps_locked,
+                gps_override_active=gps_override_active,
+                gps_actual_locked=gps_actual_locked,
+                gps_actual_lat=gps_actual_lat,
+                gps_actual_lon=gps_actual_lon,
+                gps_actual_sats=gps_actual_sats,
                 imu_calibrated=imu_calibrated,
                 publisher_connected=publisher_connected,
                 uptime_s=time.time() - self._start_ts,

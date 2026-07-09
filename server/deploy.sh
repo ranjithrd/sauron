@@ -6,5 +6,6 @@ ssh ubuntu@beta << EOF
   cd /home/ubuntu/sauron
   git pull
   cd server
+  docker compose build
   docker compose up -d
 EOF

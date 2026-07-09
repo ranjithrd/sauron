@@ -122,8 +122,12 @@ def _make_app(state: "SharedState") -> Flask:
             issues.append("Camera capture thread is not running")
         if not h.sensor_thread_alive:
             issues.append("Sensor reader thread is not running")
-        if not h.gps_locked:
-            issues.append("GPS has no satellite fix")
+        if not h.gps_actual_locked:
+            issues.append(
+                "GPS override is masking a missing satellite fix"
+                if h.gps_override_active
+                else "GPS has no satellite fix"
+            )
         if not h.imu_calibrated:
             issues.append("IMU is not yet calibrated")
         if not h.publisher_connected:
@@ -145,6 +149,11 @@ def _make_app(state: "SharedState") -> Flask:
                     "camera_alive": h.camera_alive,
                     "sensor_thread_alive": h.sensor_thread_alive,
                     "gps_locked": h.gps_locked,
+                    "gps_override_active": h.gps_override_active,
+                    "gps_actual_locked": h.gps_actual_locked,
+                    "gps_actual_lat": h.gps_actual_lat,
+                    "gps_actual_lon": h.gps_actual_lon,
+                    "gps_actual_sats": h.gps_actual_sats,
                     "imu_calibrated": h.imu_calibrated,
                     "publisher_connected": h.publisher_connected,
                     "uptime_s": round(h.uptime_s, 1),
@@ -344,7 +353,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <h2>Components</h2>
       <div class="kv"><span class="label">Camera thread</span><span class="pill ok" id="c-camera">—</span></div>
       <div class="kv" style="margin-top:4px"><span class="label">Sensor thread</span><span class="pill ok" id="c-sensor">—</span></div>
-      <div class="kv" style="margin-top:4px"><span class="label">GPS fix</span><span class="pill ok" id="c-gps">—</span></div>
+      <div class="kv" style="margin-top:4px"><span class="label">GPS fix (actual)</span><span class="pill ok" id="c-gps">—</span></div>
+      <div class="kv" style="margin-top:4px"><span class="label">Position source</span><span class="pill ok" id="c-gps-source">—</span></div>
+      <div class="kv" style="margin-top:2px" id="gps-actual-row"><span class="label" style="color:#555">Actual coords</span><span class="label" id="gps-actual-coords" style="color:#555">—</span></div>
       <div class="kv" style="margin-top:4px"><span class="label">IMU calibrated</span><span class="pill ok" id="c-imu">—</span></div>
       <div class="kv" style="margin-top:4px"><span class="label">IPC publisher</span><span class="pill ok" id="c-pub">—</span></div>
     </div>
@@ -428,7 +439,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       // Component pills
       pill($('c-camera'), h.camera_alive,      ['ALIVE',      'DEAD']);
       pill($('c-sensor'), h.sensor_thread_alive,['ALIVE',     'DEAD']);
-      pill($('c-gps'),    h.gps_locked,         ['LOCKED',    'NO FIX']);
+      pill($('c-gps'), h.gps_actual_locked, ['LOCKED', 'NO FIX']);
+      const srcEl = $('c-gps-source');
+      srcEl.className = 'pill ' + (h.gps_override_active ? 'warn' : 'ok');
+      srcEl.textContent = h.gps_override_active ? 'OVERRIDE' : 'LIVE GPS';
+      $('gps-actual-coords').textContent = h.gps_actual_locked
+        ? `${h.gps_actual_lat.toFixed(6)}, ${h.gps_actual_lon.toFixed(6)} (${h.gps_actual_sats} sats)`
+        : '—';
       pill($('c-imu'),    h.imu_calibrated,      ['CALIBRATED','UNCAL']);
       pill($('c-pub'),    h.publisher_connected, ['CONNECTED', 'DISCONNECTED']);
 

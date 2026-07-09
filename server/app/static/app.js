@@ -589,9 +589,11 @@ function toggleMsgRow(el) {
 }
 
 async function loadMessages() {
+    if (document.querySelector('#log-container .msg-row.expanded')) return;
+
     let msgs;
     try {
-        const res = await fetch('/api/messages?limit=30');
+        const res = await fetch('/api/messages?limit=10');
         msgs = await res.json();
     } catch (_) { return; }
 

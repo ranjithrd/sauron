@@ -50,6 +50,19 @@ class SensorState:
     gps_locked: bool = False
     """True when the GPS module reports a valid fix."""
 
+    # GPS — actual sensor reading, never touched by gps_override.
+    # `lat`/`lon`/`gps_locked` above are the *effective* values (what gets
+    # published); these `gps_actual_*` fields are the ground truth so a
+    # dashboard/operator can always see real fix status even when an
+    # override is masking it for the published telemetry.
+    gps_actual_lat: float = 0.0
+    gps_actual_lon: float = 0.0
+    gps_actual_sats: int = 0
+    gps_actual_locked: bool = False
+
+    gps_override_active: bool = False
+    """True if this device is configured to override GPS with a fixed position."""
+
     # IMU
     heading: float = 0.0
     """Compass bearing in degrees (0 = North). 0.0 if IMU unavailable."""
@@ -122,13 +135,18 @@ class SensorReader(threading.Thread):
         self._imu_override_pitch = imu_override_pitch
         self._imu_override_roll = imu_override_roll
 
-        # Initialise state with config-provided defaults (used when sensor is absent/unfixed)
+        # Initialise state with config-provided defaults (used when sensor is absent/unfixed).
+        # gps_actual_lat/lon start at the same fallback — they're only ever
+        # overwritten by a real NMEA fix, never by gps_override.
         self._state = SensorState(
             lat=gps_default_lat,
             lon=gps_default_lon,
+            gps_actual_lat=gps_default_lat,
+            gps_actual_lon=gps_default_lon,
             heading=imu_default_heading,
             pitch=imu_default_pitch,
             roll=imu_default_roll,
+            gps_override_active=gps_override,
         )
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -336,21 +354,21 @@ class SensorReader(threading.Thread):
                                 msg = pynmea2.parse(raw_line)
                                 if msg.is_valid:
                                     with self._lock:
-                                        self._state.lat = round(float(msg.latitude), 6)
-                                        self._state.lon = round(float(msg.longitude), 6)
-                                        self._state.gps_sats = int(msg.num_sats)
-                                        self._state.gps_locked = True
+                                        self._state.gps_actual_lat = round(float(msg.latitude), 6)
+                                        self._state.gps_actual_lon = round(float(msg.longitude), 6)
+                                        self._state.gps_actual_sats = int(msg.num_sats)
+                                        self._state.gps_actual_locked = True
                                     gps_read_count += 1
                                     logger.debug(
                                         "SensorReader [loop=%d]: GPS fix — lat=%.6f lon=%.6f sats=%d",
                                         loop_count,
-                                        self._state.lat,
-                                        self._state.lon,
-                                        self._state.gps_sats,
+                                        self._state.gps_actual_lat,
+                                        self._state.gps_actual_lon,
+                                        self._state.gps_actual_sats,
                                     )
                                 else:
                                     with self._lock:
-                                        self._state.gps_locked = False
+                                        self._state.gps_actual_locked = False
                                     logger.debug(
                                         "SensorReader [loop=%d]: $GPGGA received but fix invalid",
                                         loop_count,
@@ -374,24 +392,34 @@ class SensorReader(threading.Thread):
                         exc,
                     )
 
-            # ---- Apply overrides (always wins over sensor readings) ----
-            if self._gps_override or self._imu_override:
-                with self._lock:
-                    if self._gps_override:
-                        self._state.lat = self._gps_override_lat
-                        self._state.lon = self._gps_override_lon
-                        self._state.gps_locked = True
-                    if self._imu_override:
-                        self._state.heading = self._imu_override_heading
-                        self._state.pitch = self._imu_override_pitch
-                        self._state.roll = self._imu_override_roll
-                        self._state.imu_calibrated = True
+            # ---- Compute effective GPS (override wins) vs. actual (always real) ----
+            # gps_actual_* above is ground truth from the NMEA parser and is never
+            # touched here. lat/lon/gps_locked/gps_sats are the *effective* values
+            # used for telemetry: override wins when configured, otherwise they
+            # simply mirror the actual reading.
+            with self._lock:
+                if self._gps_override:
+                    self._state.lat = self._gps_override_lat
+                    self._state.lon = self._gps_override_lon
+                    self._state.gps_locked = True
+                else:
+                    self._state.lat = self._state.gps_actual_lat
+                    self._state.lon = self._state.gps_actual_lon
+                    self._state.gps_locked = self._state.gps_actual_locked
+                self._state.gps_sats = self._state.gps_actual_sats
+
+                if self._imu_override:
+                    self._state.heading = self._imu_override_heading
+                    self._state.pitch = self._imu_override_pitch
+                    self._state.roll = self._imu_override_roll
+                    self._state.imu_calibrated = True
 
             # Periodic info log so we know the thread is alive
             if loop_count % 200 == 0:
                 state_snap = self.get_state()
                 logger.info(
-                    "SensorReader: heartbeat [loop=%d] — GPS locked=%s (%.6f, %.6f) sats=%d | "
+                    "SensorReader: heartbeat [loop=%d] — GPS effective locked=%s (%.6f, %.6f) sats=%d "
+                    "(override=%s, actual locked=%s (%.6f, %.6f)) | "
                     "IMU heading=%.1f pitch=%.1f roll=%.1f cal=%s | "
                     "imu_reads=%d gps_reads=%d",
                     loop_count,
@@ -399,6 +427,10 @@ class SensorReader(threading.Thread):
                     state_snap.lat,
                     state_snap.lon,
                     state_snap.gps_sats,
+                    state_snap.gps_override_active,
+                    state_snap.gps_actual_locked,
+                    state_snap.gps_actual_lat,
+                    state_snap.gps_actual_lon,
                     state_snap.heading,
                     state_snap.pitch,
                     state_snap.roll,

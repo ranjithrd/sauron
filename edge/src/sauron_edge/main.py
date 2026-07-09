@@ -472,6 +472,11 @@ def main() -> None:  # noqa: C901
                 camera_w=_cam_w,
                 camera_h=_cam_h,
                 cpu_temp_c=_cpu_temp_c,
+                gps_override_active=current_sensors.gps_override_active,
+                gps_actual_locked=current_sensors.gps_actual_locked,
+                gps_actual_lat=current_sensors.gps_actual_lat,
+                gps_actual_lon=current_sensors.gps_actual_lon,
+                gps_actual_sats=current_sensors.gps_actual_sats,
             )
 
             # -- Upload snapshot if enabled --

@@ -529,6 +529,57 @@
             color: #2a3348;
             text-align: center;
         }
+
+        /* Situation summary */
+        #summary-section {
+            margin-top: 4px;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            padding: 10px 0 4px;
+        }
+
+        .summary-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .summary-title {
+            font-size: 0.62rem;
+            font-weight: 600;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+            color: #3a4458;
+        }
+
+        .summary-btn {
+            font-size: 0.6rem;
+            padding: 3px 8px;
+            border-radius: 3px;
+            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.04);
+            color: #5a6680;
+            cursor: pointer;
+        }
+
+        .summary-btn:hover { background: rgba(255,255,255,0.08); color: #e2e5eb; }
+        .summary-btn:disabled { opacity: 0.4; cursor: default; }
+
+        #summary-body {
+            font-size: 0.72rem;
+            color: #7a8899;
+            line-height: 1.6;
+            word-break: break-word;
+        }
+
+        .summary-placeholder { color: #2a3348; font-style: italic; }
+        .summary-error { color: #e5534b; }
+
+        #summary-meta {
+            font-size: 0.58rem;
+            color: #2a3348;
+            margin-top: 5px;
+        }
     </style>
 </head>
 <body>
@@ -604,6 +655,18 @@
             </div>
             <div id="vlm-history"></div>
             <div id="vlm-empty">No analyses yet</div>
+
+            <!-- Situation summary -->
+            <div id="summary-section">
+                <div class="summary-header">
+                    <span class="summary-title">Situation</span>
+                    <button class="summary-btn" id="summary-btn" onclick="refreshSummary(true)">Refresh</button>
+                </div>
+                <div id="summary-body">
+                    <span class="summary-placeholder">Press Refresh to generate</span>
+                </div>
+                <div id="summary-meta"></div>
+            </div>
         </div>
 
         <!-- Message Log Pane -->

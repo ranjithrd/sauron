@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     VLM_MODEL: str = "openrouter/qwen/qwen3-vl-8b-instruct"
     VLM_API_KEY: str = ""
     VLM_INTERVAL_S: int = 60
+    SUMMARY_MODEL: str = "openrouter/qwen/qwen3-8b"
 
     class Config:
         env_file = ".env"

@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS object_tracks (
     vel_lat         DOUBLE PRECISION,
     vel_lon         DOUBLE PRECISION,
     vel_alt         DOUBLE PRECISION,
+    confidence      DOUBLE PRECISION,
     source_cameras  TEXT[]
 );
 """
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS object_tracks (
 _OBJECT_TRACKS_MIGRATIONS = [
     "ALTER TABLE object_tracks ADD COLUMN IF NOT EXISTS altitude_m DOUBLE PRECISION",
     "ALTER TABLE object_tracks ADD COLUMN IF NOT EXISTS vel_alt DOUBLE PRECISION",
+    "ALTER TABLE object_tracks ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION",
 ]
 
 _CREATE_OBJECT_TRACKS_IDX = """

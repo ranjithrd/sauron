@@ -43,6 +43,7 @@ class SmoothedPosition:
     vel_alt: float          # vertical velocity in metres per second
     timestamp: float
     source_cameras: List[str]
+    confidence: float       # [0, 1] triangulation quality of the latest fix
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +123,7 @@ class KalmanTracker:
             vel_alt=state.vel_alt,
             timestamp=correlated.timestamp,
             source_cameras=correlated.source_cameras,
+            confidence=correlated.confidence,
         )
 
         try:

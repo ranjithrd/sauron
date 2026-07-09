@@ -25,8 +25,8 @@ async def write_track(position: SmoothedPosition) -> None:
         await conn.execute(
             """
             INSERT INTO object_tracks
-                (time, object_id, lat, lon, altitude_m, vel_lat, vel_lon, vel_alt, source_cameras)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                (time, object_id, lat, lon, altitude_m, vel_lat, vel_lon, vel_alt, confidence, source_cameras)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             """,
             time_dt,
             position.object_id,
@@ -36,6 +36,7 @@ async def write_track(position: SmoothedPosition) -> None:
             position.vel_lat,
             position.vel_lon,
             position.vel_alt,
+            position.confidence,
             position.source_cameras,
         )
     logger.debug("DB: wrote track for %s", position.object_id)

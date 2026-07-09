@@ -57,10 +57,13 @@ def _position(
         object_id=object_id,
         lat=lat,
         lon=lon,
+        altitude_m=10.0,
         vel_lat=0.001,
         vel_lon=0.002,
+        vel_alt=0.0,
         timestamp=ts or time.time(),
         source_cameras=["cam_01", "cam_02"],
+        confidence=0.9,
     )
 
 

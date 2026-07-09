@@ -422,12 +422,19 @@ async function updateTracks() {
                 markerDiv.style.transform = `scale(${scale})`;
                 markerDiv.style.boxShadow = `0px ${shadowY}px ${shadowBlur}px ${shadowColor}`;
             }
+            // Fade the marker by triangulation confidence — dim/uncertain fixes
+            // are less opaque. Floor at 0.25 so low-confidence tracks stay visible.
+            if (markerDiv && t.confidence != null) {
+                markerDiv.style.opacity = Math.max(0.25, Math.min(1, t.confidence));
+            }
         }
+        const confidencePct = t.confidence != null ? Math.round(t.confidence * 100) + '%' : '—';
         objectMarkers[t.object_id].getPopup().setContent(
             `<b>${t.object_id}</b><br>` +
             `${fmt(t.lat, 6)}, ${fmt(t.lon, 6)}<br>` +
             `Alt: ${alt}<br>` +
             `Vert: ${fmtVelAlt(t.vel_alt)}<br>` +
+            `Confidence: ${confidencePct}<br>` +
             `Sources: ${sources}`
         );
 
@@ -439,6 +446,7 @@ async function updateTracks() {
             <div class="track-detail-grid">
                 <div class="kv"><span class="k">updated</span><span class="v">${trackTime}</span></div>
                 <div class="kv"><span class="k">vert speed</span><span class="v">${fmtVelAlt(t.vel_alt)}</span></div>
+                <div class="kv"><span class="k">confidence</span><span class="v">${confidencePct}</span></div>
                 <div class="kv"><span class="k">sources</span><span class="v">${sources}</span></div>
             </div>
         </div>`;

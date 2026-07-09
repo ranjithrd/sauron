@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     CAMERA_HEIGHT_M: float = 2.0
     ASSOCIATION_MAX_DIST_M: float = 200.0
 
+    # Triangulation confidence tuning — how "fuzzy" ray-convergence matching is.
+    # TRIANGULATION_CONFIDENCE_SCALE_M: larger = more tolerant of ray separation
+    # (confidence decays more slowly with distance between the two closest-approach points).
+    # MIN_TRIANGULATION_CONFIDENCE: triangulations scoring below this are discarded.
+    TRIANGULATION_CONFIDENCE_SCALE_M: float = 25.0
+    MIN_TRIANGULATION_CONFIDENCE: float = 0.15
+
     # S3 snapshot storage
     AWS_S3_BUCKET: str = ""
     AWS_REGION: str = "ap-south-1"

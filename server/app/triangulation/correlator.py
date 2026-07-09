@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_MIN_CONFIDENCE: float = 0.15
 _METERS_PER_DEG_LAT: float = 111_320.0
 
 
@@ -169,7 +168,7 @@ class Correlator:
         if position is None:
             return
 
-        if position.confidence < _MIN_CONFIDENCE:
+        if position.confidence < settings.MIN_TRIANGULATION_CONFIDENCE:
             logger.debug(
                 "Correlator: rejected pair (%s, %s) — low confidence %.3f",
                 d1.device_id, d2.device_id, position.confidence,

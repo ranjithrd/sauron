@@ -153,7 +153,8 @@ class TestRayProjection:
         assert math.isinf(math.hypot(e0, n0)), "Horizontal ray should project to infinity"
         assert math.isfinite(math.hypot(e_down, n_down)), "Downward ray should have finite ground hit"
 
-    def test_upward_ray_returns_none(self):
+    def test_upward_ray_is_valid(self):
+        """Cameras tilted up at airspace objects must still produce a usable ray."""
         ray = build_ray(
             camera_lat=0.0,
             camera_lon=0.0,
@@ -163,7 +164,11 @@ class TestRayProjection:
             camera_fov=60.0,
             xnorm=0.5,
         )
-        assert ray is None
+        assert ray is not None
+        assert ray.dz > 0.0
+        # Upward rays never hit the ground plane.
+        e, n = ray.ground_offset_m
+        assert math.isinf(math.hypot(e, n))
 
     def test_two_cameras_with_different_pitch_still_converge(self):
         """Different camera pitch values should still triangulate to a finite midpoint."""
@@ -261,7 +266,8 @@ class TestCorrelator:
         assert set(received[0].source_cameras) == {"cam_01", "cam_02"}
         assert received[0].confidence >= 0.3
 
-    async def test_upward_ray_pair_is_rejected(self):
+    async def test_upward_ray_pair_is_correlated(self):
+        """One camera tilted up at an airspace object must still triangulate."""
         received: List[CorrelatedDetection] = []
 
         async def cb(c: CorrelatedDetection) -> None:
@@ -275,7 +281,7 @@ class TestCorrelator:
             object_id="cam_01_obj_001",
             timestamp=now,
             camera_heading=45.0,
-            camera_pitch=10.0,   # strictly upward → build_ray returns None
+            camera_pitch=10.0,   # tilted upward — must still produce a valid ray
         )
         d2 = _make_detection(
             device_id="cam_02",
@@ -289,7 +295,7 @@ class TestCorrelator:
         await correlator.add(d1)
         await correlator.add(d2)
 
-        assert received == []
+        assert len(received) == 1
 
     async def test_low_confidence_pair_rejected(self):
         """Nearly-parallel rays (cameras aimed the same direction) give low confidence."""

@@ -16,7 +16,6 @@ from typing import Optional, Tuple
 from app.config import settings
 
 _METERS_PER_DEG_LAT: float = 111_320.0
-_CONFIDENCE_DISTANCE_SCALE_M: float = 25.0
 
 
 @dataclass(frozen=True)
@@ -79,11 +78,12 @@ def build_ray(
     Construct a pitch/roll-corrected 3D ray from the camera into the scene.
 
     The ray direction is expressed as a unit vector in ENU (East-North-Up)
-    space.  Rays pointing upward (dz >= 0 after normalisation) are rejected
-    and return None — they can never intersect the ground plane and represent
-    degenerate configurations for ground-tracking.
+    space.  Upward-pointing rays are valid — this is an airspace tracker, so
+    a camera tilted up at an object above camera height must still produce
+    a usable ray for triangulation.
 
-    Returns None if the direction vector degenerates or points skyward.
+    Returns None only if the direction vector degenerates (camera pointing
+    exactly at its own origin, which cannot happen physically).
     """
     bearing = compute_object_bearing(camera_heading, camera_fov, xnorm)
     bearing_rad = math.radians(bearing)
@@ -122,10 +122,6 @@ def build_ray(
     dx_n = dx_final / mag
     dy_n = dy_final / mag
     dz_n = dz_final / mag
-
-    # Reject rays that point upward — they never hit the ground.
-    if dz_n > 0.0:
-        return None
 
     return CameraRay(
         lat=camera_lat,
@@ -195,7 +191,7 @@ def intersect_rays(
     separation_m = math.sqrt(
         (q1[0] - q2[0]) ** 2 + (q1[1] - q2[1]) ** 2 + (q1[2] - q2[2]) ** 2
     )
-    confidence = 1.0 / (1.0 + separation_m / _CONFIDENCE_DISTANCE_SCALE_M)
+    confidence = 1.0 / (1.0 + separation_m / settings.TRIANGULATION_CONFIDENCE_SCALE_M)
     confidence = max(0.0, min(1.0, confidence))
 
     lat = ray1.lat + mid_north / _METERS_PER_DEG_LAT

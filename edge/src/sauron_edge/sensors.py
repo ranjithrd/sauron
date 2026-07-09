@@ -15,13 +15,21 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from copy import copy
 from dataclasses import dataclass
+from pathlib import Path
+
+from sauron_edge.config import get_config_file_path
 
 logger = logging.getLogger(__name__)
 
 # Seconds between sensor poll iterations
 _DEFAULT_POLL_INTERVAL_S = 0.05  # 20 Hz
+
+# Raw NMEA sentences are mirrored to a small rolling file next to config.yaml
+# (not into the Greengrass component log — that would be way too much volume).
+_GPS_LOG_MAX_LINES = 100
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +143,10 @@ class SensorReader(threading.Thread):
         self._imu_override_pitch = imu_override_pitch
         self._imu_override_roll = imu_override_roll
 
+        # Raw NMEA line mirror — last _GPS_LOG_MAX_LINES lines, written next to config.yaml
+        self._gps_log_path = Path(get_config_file_path()).parent / "gps.log"
+        self._gps_log_lines: deque[str] = deque(maxlen=_GPS_LOG_MAX_LINES)
+
         # Initialise state with config-provided defaults (used when sensor is absent/unfixed).
         # gps_actual_lat/lon start at the same fallback — they're only ever
         # overwritten by a real NMEA fix, never by gps_override.
@@ -159,6 +171,16 @@ class SensorReader(threading.Thread):
         """Return a copy of the current sensor state. Never blocks for long."""
         with self._lock:
             return copy(self._state)
+
+    def _log_raw_gps_line(self, line: str) -> None:
+        """Mirror a raw NMEA sentence to gps.log, keeping only the last N lines."""
+        self._gps_log_lines.append(line)
+        try:
+            self._gps_log_path.write_text(
+                "\n".join(self._gps_log_lines) + "\n", encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.debug("SensorReader: failed to write %s — %s", self._gps_log_path, exc)
 
     def stop(self) -> None:
         """Signal the thread to exit cleanly."""
@@ -342,6 +364,9 @@ class SensorReader(threading.Thread):
                         raw_line = (
                             ser.readline().decode("utf-8", errors="ignore").strip()
                         )
+
+                        if raw_line:
+                            self._log_raw_gps_line(raw_line)
 
                         logger.debug(
                             "SensorReader [loop=%d]: NMEA line — %s",

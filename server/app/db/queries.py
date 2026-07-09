@@ -22,7 +22,7 @@ async def get_live_tracks(within_seconds: int = 5) -> list[dict]:
         rows = await conn.fetch(
             """
             SELECT DISTINCT ON (object_id)
-                object_id, lat, lon, altitude_m, vel_lat, vel_lon, time, source_cameras
+                object_id, lat, lon, altitude_m, vel_lat, vel_lon, vel_alt, time, source_cameras
             FROM object_tracks
             WHERE time > NOW() - $1::interval
             ORDER BY object_id, time DESC
@@ -39,7 +39,7 @@ async def get_object_history(object_id: str, minutes: int = 5) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT object_id, lat, lon, altitude_m, vel_lat, vel_lon, time, source_cameras
+            SELECT object_id, lat, lon, altitude_m, vel_lat, vel_lon, vel_alt, time, source_cameras
             FROM object_tracks
             WHERE object_id = $1
               AND time > NOW() - $2::interval
@@ -59,7 +59,7 @@ async def get_playback(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT object_id, lat, lon, altitude_m, vel_lat, vel_lon, time, source_cameras
+            SELECT object_id, lat, lon, altitude_m, vel_lat, vel_lon, vel_alt, time, source_cameras
             FROM object_tracks
             WHERE time >= $1 AND time <= $2
             ORDER BY time ASC

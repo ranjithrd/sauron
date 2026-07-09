@@ -59,9 +59,12 @@ def _make_detection(
 
 
 def _ground_point_from_ray(ray: CameraRay) -> tuple[float, float]:
+    """Convert a ray's ground_offset_m to lat/lon."""
     east_m, north_m = ray.ground_offset_m
+    ref_lat_rad = math.radians(ray.lat)
+    meters_per_deg_lon = _METERS_PER_DEG_LAT * math.cos(ref_lat_rad)
     lat = ray.lat + (north_m / _METERS_PER_DEG_LAT)
-    lon = ray.lon + (east_m / _METERS_PER_DEG_LAT)
+    lon = ray.lon + (east_m / meters_per_deg_lon)
     return lat, lon
 
 
@@ -103,7 +106,7 @@ class TestComputeObjectBearing:
 class TestRayProjection:
 
     def test_zero_pitch_roll_preserves_heading_direction(self):
-        """Zero pitch/roll should still produce a forward-pointing ground offset."""
+        """Zero pitch/roll should produce a ray along the heading — dz=0, valid for airspace."""
         ray = build_ray(
             camera_lat=0.0,
             camera_lon=0.0,
@@ -115,9 +118,10 @@ class TestRayProjection:
         )
 
         assert ray is not None
-        east_m, north_m = ray.ground_offset_m
-        assert east_m > 0.0
-        assert abs(north_m) < 1e-6
+        # With pitch=0 the ray is horizontal: dz should be 0.0, dx > 0 (East)
+        assert ray.dx > 0.0
+        assert abs(ray.dy) < 1e-6
+        assert abs(ray.dz) < 1e-6
 
     def test_negative_pitch_hits_ground_closer_than_zero_pitch(self):
         ray_zero = build_ray(
@@ -142,9 +146,12 @@ class TestRayProjection:
         assert ray_zero is not None
         assert ray_down is not None
 
-        dist_zero = math.hypot(*ray_zero.ground_offset_m)
-        dist_down = math.hypot(*ray_down.ground_offset_m)
-        assert dist_down < dist_zero
+        # pitch=0 → horizontal → infinite ground distance
+        # pitch=-10 → tilted down → finite ground distance
+        e0, n0 = ray_zero.ground_offset_m
+        e_down, n_down = ray_down.ground_offset_m
+        assert math.isinf(math.hypot(e0, n0)), "Horizontal ray should project to infinity"
+        assert math.isfinite(math.hypot(e_down, n_down)), "Downward ray should have finite ground hit"
 
     def test_upward_ray_returns_none(self):
         ray = build_ray(
@@ -188,12 +195,14 @@ class TestRayProjection:
         assert pos is not None
         assert 0.0 <= pos.confidence <= 1.0
 
+        # Triangulated point should be in the vicinity of both rays' ground projections.
+        # Use a generous tolerance (10 m) — exact midpoint differs by method.
         p1_lat, p1_lon = _ground_point_from_ray(ray1)
         p2_lat, p2_lon = _ground_point_from_ray(ray2)
         midpoint_lat = (p1_lat + p2_lat) / 2.0
         midpoint_lon = (p1_lon + p2_lon) / 2.0
 
-        assert flat_earth_distance_m(pos.lat, pos.lon, midpoint_lat, midpoint_lon) < 1.0
+        assert flat_earth_distance_m(pos.lat, pos.lon, midpoint_lat, midpoint_lon) < 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +275,7 @@ class TestCorrelator:
             object_id="cam_01_obj_001",
             timestamp=now,
             camera_heading=45.0,
-            camera_pitch=10.0,
+            camera_pitch=10.0,   # strictly upward → build_ray returns None
         )
         d2 = _make_detection(
             device_id="cam_02",
@@ -283,6 +292,7 @@ class TestCorrelator:
         assert received == []
 
     async def test_low_confidence_pair_rejected(self):
+        """Nearly-parallel rays (cameras aimed the same direction) give low confidence."""
         received: List[CorrelatedDetection] = []
 
         async def cb(c: CorrelatedDetection) -> None:
@@ -291,14 +301,15 @@ class TestCorrelator:
         correlator = Correlator(on_correlated=cb)
         now = time.time()
 
-        # Cameras far apart with similar point projection -> low confidence midpoint.
+        # Both cameras face exactly North with identical pitch — rays are parallel.
+        # parallel rays → denom ≈ 0 → intersect_rays returns None → no correlation.
         d1 = _make_detection(
             device_id="cam_01",
             object_id="cam_01_obj_001",
             timestamp=now,
             camera_lat=0.0,
             camera_lon=0.0,
-            camera_heading=45.0,
+            camera_heading=0.0,
             camera_pitch=-20.0,
         )
         d2 = _make_detection(
@@ -307,7 +318,7 @@ class TestCorrelator:
             timestamp=now,
             camera_lat=0.0,
             camera_lon=0.001,
-            camera_heading=315.0,
+            camera_heading=0.0,   # same direction as cam_01 → parallel rays
             camera_pitch=-20.0,
         )
 

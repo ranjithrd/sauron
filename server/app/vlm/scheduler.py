@@ -191,8 +191,9 @@ class VLMScheduler:
 
             # ── text summary (piggybacks on same enable/cycle) ────────────────
             try:
-                tracks  = await get_live_tracks(within_seconds=30)
-                cameras = await get_all_cameras()
+                from fastapi.encoders import jsonable_encoder
+                tracks  = jsonable_encoder(await get_live_tracks(within_seconds=30))
+                cameras = jsonable_encoder(await get_all_cameras())
                 summary_data = await generate_summary(
                     tracks=tracks,
                     cameras=cameras,
@@ -204,6 +205,8 @@ class VLMScheduler:
                 if summary_data.get("result"):
                     self._last_summary    = summary_data["result"]
                     self._last_summary_ts = summary_data["ts"]
+                elif summary_data.get("error"):
+                    logger.warning("VLMScheduler: summary error: %s", summary_data["error"])
             except Exception as exc:
                 logger.warning("VLMScheduler: summary failed: %s", exc)
 

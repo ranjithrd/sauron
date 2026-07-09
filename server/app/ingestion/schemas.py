@@ -29,4 +29,6 @@ class TelemetryPayload(BaseModel):
     cameras: CameraInfo
     ncoords: List[NCoord]
     timestamp: float
+    resolution_w: Optional[int] = None
+    resolution_h: Optional[int] = None
     snapshot_s3_key: Optional[str] = None

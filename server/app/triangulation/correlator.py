@@ -151,13 +151,13 @@ class Correlator:
             camera_lat=d1.camera_lat, camera_lon=d1.camera_lon,
             camera_heading=d1.camera_heading, camera_pitch=d1.camera_pitch,
             camera_roll=d1.camera_roll, camera_fov=d1.camera_fov,
-            xnorm=d1.xnorm,
+            xnorm=d1.xnorm, ynorm=d1.ynorm, camera_vfov=d1.camera_vfov,
         )
         ray2 = build_ray(
             camera_lat=d2.camera_lat, camera_lon=d2.camera_lon,
             camera_heading=d2.camera_heading, camera_pitch=d2.camera_pitch,
             camera_roll=d2.camera_roll, camera_fov=d2.camera_fov,
-            xnorm=d2.xnorm,
+            xnorm=d2.xnorm, ynorm=d2.ynorm, camera_vfov=d2.camera_vfov,
         )
 
         if ray1 is None or ray2 is None:

@@ -19,6 +19,8 @@ from app.triangulation.triangulator import (
     CameraRay,
     build_ray,
     compute_object_bearing,
+    compute_object_elevation,
+    estimate_vertical_fov,
     flat_earth_distance_m,
     intersect_rays,
 )
@@ -42,6 +44,7 @@ def _make_detection(
     camera_pitch: float = -10.0,
     camera_roll: float = 0.0,
     camera_fov: float = 60.0,
+    camera_vfov: float = 45.0,
 ) -> Detection:
     return Detection(
         device_id=device_id,
@@ -55,6 +58,7 @@ def _make_detection(
         camera_pitch=camera_pitch,
         camera_roll=camera_roll,
         camera_fov=camera_fov,
+        camera_vfov=camera_vfov,
     )
 
 
@@ -97,6 +101,40 @@ class TestComputeObjectBearing:
             xnorm=1.0,
         )
         assert math.isclose(bearing, 120.0, abs_tol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# compute_object_elevation / estimate_vertical_fov
+# ---------------------------------------------------------------------------
+
+class TestComputeObjectElevation:
+
+    def test_centre_equals_camera_pitch(self):
+        elevation = compute_object_elevation(camera_pitch_deg=5.0, vfov_deg=40.0, ynorm=0.5)
+        assert math.isclose(elevation, 5.0, abs_tol=1e-9)
+
+    def test_top_of_frame_tilts_up(self):
+        elevation = compute_object_elevation(camera_pitch_deg=0.0, vfov_deg=40.0, ynorm=0.0)
+        assert math.isclose(elevation, 20.0, abs_tol=1e-9)
+
+    def test_bottom_of_frame_tilts_down(self):
+        elevation = compute_object_elevation(camera_pitch_deg=0.0, vfov_deg=40.0, ynorm=1.0)
+        assert math.isclose(elevation, -20.0, abs_tol=1e-9)
+
+
+class TestEstimateVerticalFov:
+
+    def test_square_pixels_equals_horizontal_fov(self):
+        vfov = estimate_vertical_fov(horizontal_fov_deg=60.0, width_px=100, height_px=100)
+        assert math.isclose(vfov, 60.0, abs_tol=1e-9)
+
+    def test_4_3_aspect_is_narrower_than_horizontal(self):
+        vfov = estimate_vertical_fov(horizontal_fov_deg=90.0, width_px=640, height_px=480)
+        assert 0.0 < vfov < 90.0
+
+    def test_zero_dimensions_falls_back_to_horizontal(self):
+        vfov = estimate_vertical_fov(horizontal_fov_deg=60.0, width_px=0, height_px=480)
+        assert vfov == 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +246,37 @@ class TestRayProjection:
         midpoint_lon = (p1_lon + p2_lon) / 2.0
 
         assert flat_earth_distance_m(pos.lat, pos.lon, midpoint_lat, midpoint_lon) < 10.0
+
+    def test_altitude_varies_with_object_vertical_frame_position(self):
+        """
+        Regression test: previously every triangulated object got exactly
+        CAMERA_HEIGHT_M altitude whenever camera pitch/roll were zero (the
+        common case when IMU data is unavailable), because build_ray()
+        ignored ynorm entirely. An object near the top of frame should now
+        triangulate to a distinctly higher altitude than one near the bottom
+        of frame, even with zero camera pitch/roll.
+        """
+        cam2_lon = 10.0 / _METERS_PER_DEG_LAT
+
+        def _triangulate(ynorm: float):
+            ray1 = build_ray(
+                camera_lat=0.0, camera_lon=0.0,
+                camera_heading=45.0, camera_pitch=0.0, camera_roll=0.0,
+                camera_fov=60.0, xnorm=0.5, ynorm=ynorm, camera_vfov=40.0,
+            )
+            ray2 = build_ray(
+                camera_lat=0.0, camera_lon=cam2_lon,
+                camera_heading=315.0, camera_pitch=0.0, camera_roll=0.0,
+                camera_fov=60.0, xnorm=0.5, ynorm=ynorm, camera_vfov=40.0,
+            )
+            return intersect_rays(ray1, ray2)
+
+        pos_top = _triangulate(ynorm=0.1)     # near top of frame — should read high
+        pos_mid = _triangulate(ynorm=0.5)     # dead centre — degenerates to camera height
+        pos_bottom = _triangulate(ynorm=0.9)  # near bottom of frame — should read low
+
+        assert pos_top is not None and pos_mid is not None and pos_bottom is not None
+        assert pos_top.altitude_m > pos_mid.altitude_m > pos_bottom.altitude_m
 
 
 # ---------------------------------------------------------------------------

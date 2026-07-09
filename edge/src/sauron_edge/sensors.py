@@ -87,6 +87,19 @@ class SensorState:
     imu_calibration_status: str = "Sys:0 G:0 A:0 M:0"
     """Human-readable calibration string, e.g. 'Sys:3 G:3 A:3 M:3'."""
 
+    # IMU — actual sensor reading, never touched by imu_override. Same split
+    # as gps_actual_*: heading/pitch/roll/imu_calibrated above are the
+    # *effective* values (what gets published); these mirror the real BNO055
+    # reading regardless of override.
+    imu_actual_heading: float = 0.0
+    imu_actual_pitch: float = 0.0
+    imu_actual_roll: float = 0.0
+    imu_actual_calibrated: bool = False
+    imu_actual_calibration_status: str = "Sys:0 G:0 A:0 M:0"
+
+    imu_override_active: bool = False
+    """True if this device is configured to override IMU orientation with fixed values."""
+
 
 # ---------------------------------------------------------------------------
 # Reader thread
@@ -158,7 +171,11 @@ class SensorReader(threading.Thread):
             heading=imu_default_heading,
             pitch=imu_default_pitch,
             roll=imu_default_roll,
+            imu_actual_heading=imu_default_heading,
+            imu_actual_pitch=imu_default_pitch,
+            imu_actual_roll=imu_default_roll,
             gps_override_active=gps_override,
+            imu_override_active=imu_override,
         )
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -305,19 +322,19 @@ class SensorReader(threading.Thread):
 
                     with self._lock:
                         if euler is not None and euler.count(None) == 0:
-                            self._state.heading = round(float(euler[0]) % 360.0, 2)
-                            self._state.roll = round(float(euler[1]), 2)
-                            self._state.pitch = round(float(euler[2]), 2)
-                        self._state.imu_calibrated = sys_cal >= 1
-                        self._state.imu_calibration_status = cal_str
+                            self._state.imu_actual_heading = round(float(euler[0]) % 360.0, 2)
+                            self._state.imu_actual_roll = round(float(euler[1]), 2)
+                            self._state.imu_actual_pitch = round(float(euler[2]), 2)
+                        self._state.imu_actual_calibrated = sys_cal >= 1
+                        self._state.imu_actual_calibration_status = cal_str
 
                     imu_read_count += 1
                     logger.debug(
                         "SensorReader [loop=%d]: IMU heading=%.2f roll=%.2f pitch=%.2f cal=%s",
                         loop_count,
-                        self._state.heading,
-                        self._state.roll,
-                        self._state.pitch,
+                        self._state.imu_actual_heading,
+                        self._state.imu_actual_roll,
+                        self._state.imu_actual_pitch,
                         cal_str,
                     )
 
@@ -417,11 +434,11 @@ class SensorReader(threading.Thread):
                         exc,
                     )
 
-            # ---- Compute effective GPS (override wins) vs. actual (always real) ----
-            # gps_actual_* above is ground truth from the NMEA parser and is never
-            # touched here. lat/lon/gps_locked/gps_sats are the *effective* values
-            # used for telemetry: override wins when configured, otherwise they
-            # simply mirror the actual reading.
+            # ---- Compute effective GPS/IMU (override wins) vs. actual (always real) ----
+            # gps_actual_*/imu_actual_* above are ground truth from the sensors and are
+            # never touched here. The non-"actual" fields are the *effective* values
+            # used for telemetry: override wins when configured, otherwise they simply
+            # mirror the actual reading.
             with self._lock:
                 if self._gps_override:
                     self._state.lat = self._gps_override_lat
@@ -438,6 +455,12 @@ class SensorReader(threading.Thread):
                     self._state.pitch = self._imu_override_pitch
                     self._state.roll = self._imu_override_roll
                     self._state.imu_calibrated = True
+                else:
+                    self._state.heading = self._state.imu_actual_heading
+                    self._state.pitch = self._state.imu_actual_pitch
+                    self._state.roll = self._state.imu_actual_roll
+                    self._state.imu_calibrated = self._state.imu_actual_calibrated
+                self._state.imu_calibration_status = self._state.imu_actual_calibration_status
 
             # Periodic info log so we know the thread is alive
             if loop_count % 200 == 0:
@@ -445,7 +468,8 @@ class SensorReader(threading.Thread):
                 logger.info(
                     "SensorReader: heartbeat [loop=%d] — GPS effective locked=%s (%.6f, %.6f) sats=%d "
                     "(override=%s, actual locked=%s (%.6f, %.6f)) | "
-                    "IMU heading=%.1f pitch=%.1f roll=%.1f cal=%s | "
+                    "IMU effective heading=%.1f pitch=%.1f roll=%.1f cal=%s "
+                    "(override=%s, actual heading=%.1f pitch=%.1f roll=%.1f cal=%s) | "
                     "imu_reads=%d gps_reads=%d",
                     loop_count,
                     state_snap.gps_locked,
@@ -460,6 +484,11 @@ class SensorReader(threading.Thread):
                     state_snap.pitch,
                     state_snap.roll,
                     state_snap.imu_calibration_status,
+                    state_snap.imu_override_active,
+                    state_snap.imu_actual_heading,
+                    state_snap.imu_actual_pitch,
+                    state_snap.imu_actual_roll,
+                    state_snap.imu_actual_calibration_status,
                     imu_read_count,
                     gps_read_count,
                 )

@@ -99,7 +99,17 @@ class ComponentHealth:
     """Real GPS reading — always the ground truth, never masked by an override."""
 
     imu_calibrated: bool = False
-    """True if BNO055 system calibration level >= 1."""
+    """True if BNO055 system calibration level >= 1 (effective value — see imu_override_active)."""
+
+    imu_override_active: bool = False
+    """True if this device publishes a fixed override orientation instead of the real IMU."""
+
+    imu_actual_calibrated: bool = False
+    imu_actual_heading: float = 0.0
+    imu_actual_pitch: float = 0.0
+    imu_actual_roll: float = 0.0
+    imu_actual_calibration_status: str = "Sys:0 G:0 A:0 M:0"
+    """Real IMU reading — always the ground truth, never masked by an override."""
 
     publisher_connected: bool = False
     """True if the Greengrass IPC connection is live."""
@@ -239,6 +249,12 @@ class SharedState:
         gps_actual_lat: float = 0.0,
         gps_actual_lon: float = 0.0,
         gps_actual_sats: int = 0,
+        imu_override_active: bool = False,
+        imu_actual_calibrated: bool = False,
+        imu_actual_heading: float = 0.0,
+        imu_actual_pitch: float = 0.0,
+        imu_actual_roll: float = 0.0,
+        imu_actual_calibration_status: str = "Sys:0 G:0 A:0 M:0",
     ) -> None:
         with self._lock:
             self._health = ComponentHealth(
@@ -251,6 +267,12 @@ class SharedState:
                 gps_actual_lon=gps_actual_lon,
                 gps_actual_sats=gps_actual_sats,
                 imu_calibrated=imu_calibrated,
+                imu_override_active=imu_override_active,
+                imu_actual_calibrated=imu_actual_calibrated,
+                imu_actual_heading=imu_actual_heading,
+                imu_actual_pitch=imu_actual_pitch,
+                imu_actual_roll=imu_actual_roll,
+                imu_actual_calibration_status=imu_actual_calibration_status,
                 publisher_connected=publisher_connected,
                 uptime_s=time.time() - self._start_ts,
                 frames_processed=frames_processed,

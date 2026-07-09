@@ -477,6 +477,12 @@ def main() -> None:  # noqa: C901
                 gps_actual_lat=current_sensors.gps_actual_lat,
                 gps_actual_lon=current_sensors.gps_actual_lon,
                 gps_actual_sats=current_sensors.gps_actual_sats,
+                imu_override_active=current_sensors.imu_override_active,
+                imu_actual_calibrated=current_sensors.imu_actual_calibrated,
+                imu_actual_heading=current_sensors.imu_actual_heading,
+                imu_actual_pitch=current_sensors.imu_actual_pitch,
+                imu_actual_roll=current_sensors.imu_actual_roll,
+                imu_actual_calibration_status=current_sensors.imu_actual_calibration_status,
             )
 
             # -- Upload snapshot if enabled --

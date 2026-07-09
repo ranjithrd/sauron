@@ -128,8 +128,12 @@ def _make_app(state: "SharedState") -> Flask:
                 if h.gps_override_active
                 else "GPS has no satellite fix"
             )
-        if not h.imu_calibrated:
-            issues.append("IMU is not yet calibrated")
+        if not h.imu_actual_calibrated:
+            issues.append(
+                "IMU override is masking an uncalibrated sensor"
+                if h.imu_override_active
+                else "IMU is not yet calibrated"
+            )
         if not h.publisher_connected:
             issues.append("Greengrass IPC publisher is not connected")
         if h.total_publish_failures > 0:
@@ -155,6 +159,12 @@ def _make_app(state: "SharedState") -> Flask:
                     "gps_actual_lon": h.gps_actual_lon,
                     "gps_actual_sats": h.gps_actual_sats,
                     "imu_calibrated": h.imu_calibrated,
+                    "imu_override_active": h.imu_override_active,
+                    "imu_actual_calibrated": h.imu_actual_calibrated,
+                    "imu_actual_heading": h.imu_actual_heading,
+                    "imu_actual_pitch": h.imu_actual_pitch,
+                    "imu_actual_roll": h.imu_actual_roll,
+                    "imu_actual_calibration_status": h.imu_actual_calibration_status,
                     "publisher_connected": h.publisher_connected,
                     "uptime_s": round(h.uptime_s, 1),
                     "frames_processed": h.frames_processed,
@@ -356,7 +366,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="kv" style="margin-top:4px"><span class="label">GPS fix (actual)</span><span class="pill ok" id="c-gps">—</span></div>
       <div class="kv" style="margin-top:4px"><span class="label">Position source</span><span class="pill ok" id="c-gps-source">—</span></div>
       <div class="kv" style="margin-top:2px" id="gps-actual-row"><span class="label" style="color:#555">Actual coords</span><span class="label" id="gps-actual-coords" style="color:#555">—</span></div>
-      <div class="kv" style="margin-top:4px"><span class="label">IMU calibrated</span><span class="pill ok" id="c-imu">—</span></div>
+      <div class="kv" style="margin-top:4px"><span class="label">IMU calibrated (actual)</span><span class="pill ok" id="c-imu">—</span></div>
+      <div class="kv" style="margin-top:4px"><span class="label">Orientation source</span><span class="pill ok" id="c-imu-source">—</span></div>
+      <div class="kv" style="margin-top:2px" id="imu-actual-row"><span class="label" style="color:#555">Actual orientation</span><span class="label" id="imu-actual-values" style="color:#555">—</span></div>
       <div class="kv" style="margin-top:4px"><span class="label">IPC publisher</span><span class="pill ok" id="c-pub">—</span></div>
     </div>
 
@@ -446,7 +458,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
       $('gps-actual-coords').textContent = h.gps_actual_locked
         ? `${h.gps_actual_lat.toFixed(6)}, ${h.gps_actual_lon.toFixed(6)} (${h.gps_actual_sats} sats)`
         : '—';
-      pill($('c-imu'),    h.imu_calibrated,      ['CALIBRATED','UNCAL']);
+      pill($('c-imu'), h.imu_actual_calibrated, ['CALIBRATED', 'UNCAL']);
+      const imuSrcEl = $('c-imu-source');
+      imuSrcEl.className = 'pill ' + (h.imu_override_active ? 'warn' : 'ok');
+      imuSrcEl.textContent = h.imu_override_active ? 'OVERRIDE' : 'LIVE IMU';
+      $('imu-actual-values').textContent =
+        `hdg=${h.imu_actual_heading.toFixed(1)}° pitch=${h.imu_actual_pitch.toFixed(1)}° ` +
+        `roll=${h.imu_actual_roll.toFixed(1)}° cal=${h.imu_actual_calibration_status}`;
       pill($('c-pub'),    h.publisher_connected, ['CONNECTED', 'DISCONNECTED']);
 
       // Current detections

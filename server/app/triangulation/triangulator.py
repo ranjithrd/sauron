@@ -65,6 +65,35 @@ def compute_object_bearing(
     return (camera_heading_deg + x_offset_deg) % 360.0
 
 
+def compute_object_elevation(
+    camera_pitch_deg: float,
+    vfov_deg: float,
+    ynorm: float,
+) -> float:
+    """
+    Return the object's absolute elevation angle from camera pitch + vertical
+    pixel offset, mirroring how compute_object_bearing() derives azimuth from
+    heading + horizontal pixel offset.
+
+    ynorm is [0, 1] top-to-bottom, so an object above frame-centre (ynorm < 0.5)
+    should tilt the ray *up* relative to the camera's own pitch.
+    """
+    y_offset_deg = (0.5 - ynorm) * vfov_deg
+    return camera_pitch_deg + y_offset_deg
+
+
+def estimate_vertical_fov(horizontal_fov_deg: float, width_px: float, height_px: float) -> float:
+    """
+    Derive vertical FOV from horizontal FOV and the sensor's pixel aspect
+    ratio, assuming a simple rectilinear (pinhole) lens model.
+    """
+    if width_px <= 0 or height_px <= 0:
+        return horizontal_fov_deg
+    half_h_rad = math.radians(horizontal_fov_deg) / 2.0
+    half_v_rad = math.atan(math.tan(half_h_rad) * (height_px / width_px))
+    return math.degrees(half_v_rad) * 2.0
+
+
 def build_ray(
     camera_lat: float,
     camera_lon: float,
@@ -73,6 +102,8 @@ def build_ray(
     camera_roll: float,
     camera_fov: float,
     xnorm: float,
+    ynorm: float = 0.5,
+    camera_vfov: float = 45.0,
 ) -> Optional[CameraRay]:
     """
     Construct a pitch/roll-corrected 3D ray from the camera into the scene.
@@ -81,6 +112,12 @@ def build_ray(
     space.  Upward-pointing rays are valid — this is an airspace tracker, so
     a camera tilted up at an object above camera height must still produce
     a usable ray for triangulation.
+
+    ynorm/camera_vfov give the object's own vertical position in-frame, so two
+    objects seen in the same frame (same camera pitch/roll) still get distinct
+    elevation angles — without this, every object triangulates to the same
+    altitude as the camera whenever pitch/roll is zero (see estimate_vertical_fov
+    and compute_object_elevation).
 
     Returns None only if the direction vector degenerates (camera pointing
     exactly at its own origin, which cannot happen physically).
@@ -94,7 +131,11 @@ def build_ray(
 
     # Pitch: rotate the horizontal (dx, dy) ray toward/away from vertical.
     # Positive pitch = tilted up, negative = tilted down toward ground.
-    pitch_rad = math.radians(camera_pitch)
+    # Combine the camera's own pitch with this specific object's vertical
+    # offset in-frame, so altitude is derived per-object rather than being
+    # constant for every detection from a given camera.
+    elevation = compute_object_elevation(camera_pitch, camera_vfov, ynorm)
+    pitch_rad = math.radians(elevation)
     # The forward component (along the bearing direction) is scaled by cos(pitch).
     # The vertical component (dz) is introduced by sin(pitch).
     dy_pitched = dy * math.cos(pitch_rad)

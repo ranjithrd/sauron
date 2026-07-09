@@ -28,6 +28,23 @@ let mapFitted      = false;
 let lastUpdateTime = null;
 const _snapshotKeyCache = {};
 
+// Raw per-camera triangulation rays/dots — off by default (they lag behind
+// the smoothed track and read as duplicate "ghost" positions).
+let showRawRays = localStorage.getItem('showRawRays') === '1';
+
+function onRawRaysToggle(checked) {
+    showRawRays = checked;
+    localStorage.setItem('showRawRays', checked ? '1' : '0');
+    if (checked) {
+        updateRays();
+    } else {
+        Object.values(rayLayers).forEach(l => map.removeLayer(l));
+        Object.values(dotLayers).forEach(l => map.removeLayer(l));
+        rayLayers = {};
+        dotLayers = {};
+    }
+}
+
 // VLM deadman state (browser side)
 let _vlmEnabled       = false;
 let _vlmHeartbeatTimer = null;
@@ -138,6 +155,8 @@ function _rayEndpoint(lat, lon, dx, dy, distanceM) {
 }
 
 async function updateRays() {
+    if (!showRawRays) return;
+
     let rays;
     try {
         const res = await fetch('/api/live_rays?within_seconds=5');
@@ -687,6 +706,9 @@ async function loadMessages() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Boot
 // ─────────────────────────────────────────────────────────────────────────────
+
+const _rawRaysToggleEl = document.getElementById('raw-rays-toggle');
+if (_rawRaysToggleEl) _rawRaysToggleEl.checked = showRawRays;
 
 loadCameras();
 loadStats();

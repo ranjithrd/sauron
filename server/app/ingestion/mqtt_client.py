@@ -12,6 +12,7 @@ from app.config import settings
 from app.db.writer import upsert_camera, upsert_snapshot
 from app.ingestion import message_log
 from app.ingestion.schemas import TelemetryPayload
+from app.triangulation.triangulator import estimate_vertical_fov
 
 try:
     from awscrt import io, mqtt
@@ -27,6 +28,11 @@ _TOPIC_FILTER = "devices/+/telemetry"
 _RECONNECT_DELAY_S = 5.0
 _PUBLISH_TIMEOUT_S = 10.0
 
+# Fallback aspect ratio when a device doesn't report resolution_w/resolution_h
+# (matches the edge default of camera_dimensions="640x480").
+_DEFAULT_RESOLUTION_W = 640
+_DEFAULT_RESOLUTION_H = 480
+
 
 @dataclass
 class Detection:
@@ -41,6 +47,7 @@ class Detection:
     camera_pitch: float
     camera_roll: float
     camera_fov: float
+    camera_vfov: float
 
 
 AsyncCallback = Callable[[Detection], Awaitable[None]]
@@ -307,6 +314,12 @@ class MQTTClient:
             payload_model.cameras.imu.roll,
         )
 
+        camera_vfov = estimate_vertical_fov(
+            payload_model.cameras.fov,
+            payload_model.resolution_w or _DEFAULT_RESOLUTION_W,
+            payload_model.resolution_h or _DEFAULT_RESOLUTION_H,
+        )
+
         for coord in payload_model.ncoords:
             detection = Detection(
                 device_id=device_id,
@@ -320,6 +333,7 @@ class MQTTClient:
                 camera_pitch=payload_model.cameras.imu.pitch,
                 camera_roll=payload_model.cameras.imu.roll,
                 camera_fov=payload_model.cameras.fov,
+                camera_vfov=camera_vfov,
             )
             await self._emit_detection(detection)
 

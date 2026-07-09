@@ -28,21 +28,22 @@ let mapFitted      = false;
 let lastUpdateTime = null;
 const _snapshotKeyCache = {};
 
-// Raw per-camera triangulation rays/dots — off by default (they lag behind
-// the smoothed track and read as duplicate "ghost" positions).
-let showRawRays = localStorage.getItem('showRawRays') === '1';
+// Raw per-camera triangulation rays/dots — on by default. These are the
+// direct ray-intersection fixes (pre-Kalman-smoothing); the smoothed track
+// markers can lag/drift, so the raw intersection is the more trustworthy
+// read for this use-case.
+let showRawRays = localStorage.getItem('showRawRays') !== '0';
 
 function onRawRaysToggle(checked) {
     showRawRays = checked;
     localStorage.setItem('showRawRays', checked ? '1' : '0');
-    if (checked) {
-        updateRays();
-    } else {
+    if (!checked) {
         Object.values(rayLayers).forEach(l => map.removeLayer(l));
         Object.values(dotLayers).forEach(l => map.removeLayer(l));
         rayLayers = {};
         dotLayers = {};
     }
+    updateRays();
 }
 
 // VLM deadman state (browser side)
@@ -155,7 +156,14 @@ function _rayEndpoint(lat, lon, dx, dy, distanceM) {
 }
 
 async function updateRays() {
-    if (!showRawRays) return;
+    const raysContainer = document.getElementById('rays-container');
+    const rayCount      = document.getElementById('ray-count');
+
+    if (!showRawRays) {
+        if (rayCount) rayCount.textContent = '0';
+        if (raysContainer) raysContainer.innerHTML = '<div class="empty-state">Raw rays hidden.</div>';
+        return;
+    }
 
     let rays;
     try {
@@ -167,6 +175,7 @@ async function updateRays() {
 
     const seenRays = new Set();
     const seenDots = new Set();
+    let raysHtml = '';
 
     rays.forEach(r => {
         if (!Number.isFinite(r.camera_lat) || !Number.isFinite(r.dx) || !Number.isFinite(r.tri_lat)) return;
@@ -177,6 +186,15 @@ async function updateRays() {
         seenDots.add(dotKey);
 
         const colour = deviceColour(r.device_id);
+        const alt = r.tri_alt_m != null ? r.tri_alt_m.toFixed(1) + 'm' : '—';
+        const tooltipHtml = `${r.device_id}<br>${fmt(r.tri_lat, 5)}, ${fmt(r.tri_lon, 5)}${r.tri_alt_m != null ? '<br>alt: ' + alt : ''}`;
+
+        raysHtml += `
+        <div class="track-card" onclick="map.setView([${r.tri_lat},${r.tri_lon}], 18)">
+            <div class="track-id">${r.device_id}</div>
+            <div class="track-pos">${fmt(r.tri_lat, 6)}, ${fmt(r.tri_lon, 6)}</div>
+            <div class="track-alt">Alt: ${alt}</div>
+        </div>`;
 
         const refLatRad = r.camera_lat * Math.PI / 180;
         const mPerDegLon = _METERS_PER_DEG_LAT * Math.cos(refLatRad);
@@ -203,16 +221,17 @@ async function updateRays() {
                 fillOpacity: 1,
                 weight: 1.5,
             }).bindTooltip(
-                `${r.device_id}<br>${fmt(r.tri_lat, 5)}, ${fmt(r.tri_lon, 5)}${r.tri_alt_m != null ? '<br>alt: ' + r.tri_alt_m.toFixed(1) + 'm' : ''}`,
-                { sticky: true, className: 'ray-tooltip' }
+                tooltipHtml,
+                { permanent: true, direction: 'top', offset: [0, -6], className: 'ray-tooltip' }
             ).addTo(map);
         } else {
             dotLayers[dotKey].setLatLng([r.tri_lat, r.tri_lon]);
-            dotLayers[dotKey].setTooltipContent(
-                `${r.device_id}<br>${fmt(r.tri_lat, 5)}, ${fmt(r.tri_lon, 5)}${r.tri_alt_m != null ? '<br>alt: ' + r.tri_alt_m.toFixed(1) + 'm' : ''}`
-            );
+            dotLayers[dotKey].setTooltipContent(tooltipHtml);
         }
     });
+
+    if (raysContainer) raysContainer.innerHTML = raysHtml || '<div class="empty-state">No active rays.</div>';
+    if (rayCount) rayCount.textContent = seenDots.size;
 
     Object.keys(rayLayers).forEach(k => {
         if (!seenRays.has(k)) { map.removeLayer(rayLayers[k]); delete rayLayers[k]; }
